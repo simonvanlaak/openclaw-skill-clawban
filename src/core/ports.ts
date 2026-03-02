@@ -47,6 +47,7 @@ export type ShowPayload = {
 };
 
 export type CreateInput = {
+  projectId?: string;
   title: string;
   body: string;
 };

@@ -1,321 +1,257 @@
-# Kanban Workflow Core Skill — Technical Plan
+# Kanban Workflow - Technical Plan (Plane-only)
 
-**Scope**: Define the platform-agnostic “Kanban Workflow core” plus a pluggable adapter layer for PM systems (GitHub/Planka/OpenProject/etc.) that uses **CLI-managed auth** (no direct HTTP auth handling in core).
+Status: active implementation plan
+Last updated: 2026-03-02
+Source of truth: `references/REQUIREMENTS.md`
 
-**Primary entrypoint**: `kanban-workflow tick` (deterministic worker pass). Optional: `kanban-workflow webhook` only where inbound events are available without managing auth.
+## 1) Objective
 
----
+Implement a clean, navigable architecture for a Plane-only workflow system with:
+- one local orchestrator command: `workflow-loop`
+- one active worker session at a time
+- one decision-agent evaluation per worker completion
+- forced-choice outcome (`continue | blocked | completed`) with `blocked` fallback when decision output is invalid/ambiguous
 
-## 1) Design goals / non-goals
+## 2) Runtime architecture
 
-### Goals
-- **Canonical stage lifecycle** as the shared state machine:
-  - `stage:todo`, `stage:queued`, `stage:needs-clarification`, `stage:ready-to-implement`, `stage:in-progress`, `stage:in-review`, `stage:blocked`, plus platform-specific done/closed.
-- **Ports & adapters** architecture: core holds rules and state; adapters translate between core model and platform specifics.
-- **Deterministic tick**: same inputs + same config/state ⇒ same decisions.
-- **Idempotent actions**: safe re-runs; dedupe on action keys.
-- **Polling + snapshot diff** support for platforms without robust event feeds.
+### 2.1 Roles
 
-### Non-goals
-- A full multi-tenant PM product.
-- OAuth/token handling in Kanban Workflow core.
-- Perfect real-time sync (tick cadence is acceptable).
+- `workflow-loop` (local CLI/script, non-agent)
+  - authoritative orchestrator
+  - single mutation authority
+  - no LLM tokens consumed by loop itself
 
----
+- Worker agent session (OpenClaw subagent)
+  - performs implementation work
+  - outputs Markdown work report
+  - session is per-ticket and persistent across requeues
 
-## 2) Canonical domain model
+- Decision agent session (OpenClaw subagent)
+  - classifies worker result into exactly one decision
+  - bounded rolling session reuse: max 5 tickets, rotate at 50% context budget
 
-### Identifiers
-Use stable, adapter-scoped IDs.
-- `AdapterId`: string (e.g. `github`, `planka`)
-- `WorkItemId`: `{adapter}:{native_id}` (e.g. `github:repo#123`, `planka:card:abcd`)
-- `ProjectId`: `{adapter}:{native_id}`
+### 2.2 High-level flow
 
-### Entities
-Keep these as the *core* schema; adapters map into/out of them.
+1. `workflow-loop` loads state + Plane snapshot.
+2. If active worker exists:
+   - do housekeeping only (status checks, retry enforcement, auto-reopen handling).
+3. If no active worker:
+   - select next actionable ticket (strict assignee=`whoami`, merged all-project backlog ordering).
+   - start or resume per-ticket worker session.
+4. On worker completion:
+   - parse report sufficiency.
+   - if insufficient -> one retry prompt with missing items only.
+   - if still insufficient -> invoke decision agent; invalid/ambiguous decision defaults to `blocked`.
+5. Apply exactly one mutation + comment.
+6. Update session map and loop state.
 
-```text
-Stage
-- BACKLOG | QUEUED | NEEDS_CLARIFICATION | READY_TO_IMPLEMENT
-- IN_PROGRESS | IN_REVIEW | BLOCKED | DONE (normalized)
-
-WorkItem
-- id: WorkItemId
-- project_id: ProjectId
-- title: str
-- body: str | None
-- stage: Stage
-- labels: set[str]                # includes canonical stage labels where relevant
-- assignees: set[str]             # platform usernames
-- priority: str | None            # optional normalized priority (P0..P3 or similar)
-- url: str | None
-- updated_at: datetime | None
-- etag/version: str | None        # adapter-provided version cursor if available
-
-Comment
-- id: str (adapter-native)
-- work_item_id: WorkItemId
-- author: str
-- body: str
-- created_at: datetime
-
-Snapshot
-- work_item_id: WorkItemId
-- captured_at: datetime
-- payload_hash: str               # hash of normalized snapshot for diffing
-- payload_json: dict              # minimal normalized snapshot used by core
-```
-
-### Canonical events
-Events are produced by adapters (webhook/poll/diff) and consumed by core.
+## 3) Code architecture (navigable module boundaries)
 
 ```text
-Event (base)
-- id: str                         # globally unique; used for dedupe
-- adapter: AdapterId
-- occurred_at: datetime
-- work_item_id: WorkItemId | None
-- kind: str
-- payload: dict
+src/
+  cli/
+    run.ts                      # command routing
+    parse.ts                    # flag parsing (minimal)
 
-Kinds
-- WorkItemCreated
-- WorkItemUpdated
-- StageChanged
-- CommentAdded
-- CommentEdited (optional)
-- WorkItemClosed / WorkItemReopened (optional)
+  application/
+    workflow_loop.ts            # orchestration entrypoint for command
+    setup.ts                    # setup command use-case
+    show.ts                     # show use-case
+    create.ts                   # create use-case
+
+  core/
+    types.ts                    # domain and contracts
+    ordering.ts                 # priority/title deterministic ordering
+    report_parser.ts            # flexible markdown -> normalized report facts
+    decision_contract.ts        # decision-agent IO schema and validation
+    policies/
+      continue_cap.ts           # max 2 continue policy
+      retry_policy.ts           # one retry max policy
+      fallback_policy.ts        # invalid decision -> blocked
+
+  loop/
+    state_store.ts              # .tmp/kwf-session-map.json access
+    worker_sessions.ts          # per-ticket worker session lifecycle
+    decision_sessions.ts        # rolling decision-agent session policy
+    auto_reopen_runner.ts       # silent reopen processing
+    mutation_executor.ts        # single mutation authority
+    selection.ts                # next actionable ticket resolver
+
+  plane/
+    adapter.ts                  # Plane read/write API boundary
+    mapping.ts                  # canonical<->plane stage mapping
+    identity.ts                 # whoami resolution helpers
 ```
 
-**Normalization rule**: core only relies on canonical fields + `payload` for adapter-specific extras.
+Boundary rules:
+- Only `plane/adapter.ts` talks to Plane CLI/API.
+- Only `loop/mutation_executor.ts` performs ticket mutations.
+- `core/*` is pure logic (test-first, no IO).
+- `application/workflow_loop.ts` coordinates modules; it contains no domain rules.
 
----
+## 4) State model
 
-## 3) Ports (internal adapter interface)
+Primary state file: `.tmp/kwf-session-map.json`
 
-Adapters are responsible for:
-1) **Reading** platform state (list items, fetch details, list comments).
-2) **Writing** platform changes (add comment, set stage/labels, assign, close/reopen).
-3) Providing an **event stream** via either:
-   - webhooks → `ingest_webhook(...) → list[Event]`, or
-   - polling → `poll(...) → list[Event]` (often implemented with snapshot diff).
+Required records:
+- `activeWorker`
+  - ticketId
+  - workerSessionId
+  - startedAt
+  - lastActivityAt
+- `ticketSessions`
+  - ticketId -> workerSessionId
+  - continueCount
+  - status (`active|blocked|completed|archived`)
+  - lastActivityAt
+- `decisionSession`
+  - sessionId
+  - ticketsUsedCount
+  - contextUsageRatio
+- `dispatchRuns`
+  - dispatchRunId
+  - ticketId
+  - timestamps
+  - finalDecision
 
-### Python interface (Protocol / ABC)
+No separate decision artifact file is created.
 
-```python
-from __future__ import annotations
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Iterable, Optional, Protocol
+## 5) Selection and ordering logic
 
-@dataclass(frozen=True)
-class PollCursor:
-    value: str
+Actionable backlog candidates must satisfy:
+- stage `stage:todo`
+- assignee exactly equals authenticated `whoami`
 
-@dataclass(frozen=True)
-class ActionResult:
-    action_id: str
-    ok: bool
-    message: str | None = None
+Ordering across all monitored projects:
+1. higher priority first
+2. tie-break by ticket title alphabetical
+3. deterministic final tie-break by ticket id (implementation detail)
 
-class Kanban WorkflowAdapter(Protocol):
-    adapter_id: str
+If active worker exists, no new selection is performed.
 
-    # --- read
-    def list_projects(self) -> list[Project]: ...
-    def list_work_items(self, project_id: ProjectId, *, cursor: Optional[PollCursor]) -> tuple[list[WorkItem], Optional[PollCursor]]: ...
-    def get_work_item(self, work_item_id: WorkItemId) -> WorkItem: ...
-    def list_comments(self, work_item_id: WorkItemId, *, since: Optional[datetime] = None) -> list[Comment]: ...
+## 6) Worker report and decision path
 
-    # --- event ingestion
-    def poll_events(self, project_id: ProjectId, *, cursor: Optional[PollCursor]) -> tuple[list[Event], Optional[PollCursor]]: ...
-    def ingest_webhook(self, *, headers: dict[str, str], body: bytes) -> list[Event]: ...
+### 6.1 Worker report requirements (Markdown, flexible parsing)
 
-    # --- writes (idempotent where possible)
-    def ensure_stage(self, work_item_id: WorkItemId, stage: Stage) -> ActionResult: ...
-    def add_comment(self, work_item_id: WorkItemId, body: str, *, dedupe_key: str) -> ActionResult: ...
-    def set_labels(self, work_item_id: WorkItemId, labels: set[str]) -> ActionResult: ...
-    def set_assignees(self, work_item_id: WorkItemId, assignees: set[str]) -> ActionResult: ...
-    def close_work_item(self, work_item_id: WorkItemId) -> ActionResult: ...
-```
+Required facts to extract:
+- verification evidence
+- blockers with status (`open|resolved`)
+- uncertainties
+- confidence (`0.0..1.0`)
 
-### Adapter implementation constraints
-- **CLI-only auth**: adapters call CLIs (`gh`, `planka-cli`, `openproject-cli`, etc.) and parse outputs.
-- Outputs should be requested as **JSON** when CLIs support it.
-- Adapters should return *normalized* entities and events.
-- Adapters must provide **stable cursors** when possible, otherwise rely on snapshots + timestamps.
+### 6.2 Retry policy
 
----
+- If report insufficient/unparseable:
+  - one retry only
+  - retry prompt includes missing items only
+- If still insufficient:
+  - call decision agent once
+  - if decision invalid/ambiguous -> force `blocked`
 
-## 4) State storage & dedupe
+### 6.3 Decision policy
 
-We need persistent state for:
-- per-project polling cursors
-- last-seen snapshots for diffing
-- processed event IDs (dedupe)
-- emitted action IDs (idempotency)
+- Decision agent must return exactly one of:
+  - `continue`
+  - `blocked`
+  - `completed`
 
-### Recommended: SQLite (default)
-Use a small SQLite DB under skill-local `data/`:
-- Pros: robust, queryable, good for dedupe, safe concurrency with simple locking.
-- Cons: slightly more setup than JSON.
+Enforcements by loop:
+- `completed` accepted only when verification evidence exists and blockers resolved.
+- per-ticket `continue` cap is 2.
+- if decision is `continue` after cap -> coerce to `blocked`.
+- invalid/missing/ambiguous decision -> `blocked`.
 
-Schema sketch:
-```sql
--- Cursors per adapter+project
-CREATE TABLE cursors (
-  adapter TEXT NOT NULL,
-  project_id TEXT NOT NULL,
-  cursor TEXT,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (adapter, project_id)
-);
+## 7) Mutation semantics
 
--- Latest normalized snapshot hash to generate synthetic events
-CREATE TABLE snapshots (
-  work_item_id TEXT PRIMARY KEY,
-  payload_hash TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  captured_at TEXT NOT NULL
-);
+Only loop mutates Plane tickets.
 
--- Dedupe incoming events
-CREATE TABLE processed_events (
-  event_id TEXT PRIMARY KEY,
-  occurred_at TEXT NOT NULL,
-  adapter TEXT NOT NULL,
-  kind TEXT NOT NULL
-);
+- `continue`
+  - post progress comment
+  - no stage change
+- `blocked`
+  - post block/insufficiency comment (freeform)
+  - move stage to `stage:blocked`
+- `completed`
+  - post completion comment
+  - move stage to `stage:in-review`
 
--- Dedupe outgoing actions (comment/stage changes)
-CREATE TABLE emitted_actions (
-  action_id TEXT PRIMARY KEY,
-  work_item_id TEXT,
-  kind TEXT NOT NULL,
-  dedupe_key TEXT,
-  created_at TEXT NOT NULL
-);
-```
+## 8) Session lifecycle policies
 
-### JSON (optional, fallback)
-Support a `--state-backend json` for quick demos:
-- `state/cursors.json`, `state/snapshots.json`, `state/processed_events.json`.
-- Must implement compaction/TTL to avoid unbounded growth.
+Worker sessions:
+- one persistent session per ticket
+- reused after unblock/resume
+- archived on completed
+- archived after 7 days inactivity for blocked tickets
 
-### TTL / compaction rules
-- `processed_events`: keep N days (e.g. 30) or last N entries per adapter.
-- `snapshots`: keep only latest per work item.
-- `emitted_actions`: keep N days (e.g. 90) for idempotency.
+Decision-agent sessions:
+- rolling session
+- max 5 tickets per session
+- no time-based limit
+- early rotate when context usage >= 50%
 
----
+## 9) Command surface
 
-## 5) Tick loop algorithm (deterministic)
+Supported commands:
+- `kanban-workflow setup --adapter plane ...`
+- `kanban-workflow show --id <ticket-id>`
+- `kanban-workflow create --project-id <uuid> --title "..." [--body "..."]`
+- `kanban-workflow workflow-loop [--dry-run]`
 
-`kanban-workflow tick` performs one pass:
+Removed commands/features:
+- `autopilot-tick`
+- `next`
+- manual mutation commands (`start|update|ask|complete`)
+- legacy aliases (`continue|blocked|completed` as direct user commands)
+- non-Plane adapters
 
-1) **Load config**
-   - adapters enabled, projects to watch, tick options (max items/events), stage rules.
+## 10) Migration phases
 
-2) **For each (adapter, project)**
-   - load `cursor` from state.
-   - call `adapter.poll_events(project_id, cursor)`.
-   - store updated cursor.
+Phase 1: command + naming alignment
+- rename command path to `workflow-loop`
+- remove deprecated command handlers
 
-3) **Normalize + dedupe**
-   - drop events whose `event_id` already exists in `processed_events`.
-   - store new `event_id`s.
+Phase 2: plane-only boundary
+- remove non-Plane adapter wiring from config + CLI + exports
 
-4) **Materialize current item state (as needed)**
-   - for events referencing items, fetch `WorkItem` details if event payload is insufficient.
-   - maintain/update latest `Snapshot` (store `payload_hash`).
+Phase 3: orchestration extraction
+- move loop orchestration out of CLI into `application/workflow_loop.ts`
+- introduce `loop/*` modules
 
-5) **Rules engine (core decisions)**
-   - input: events + current WorkItem.
-   - output: ordered `PlannedAction[]`.
+Phase 4: decision pipeline
+- add report parser + decision contract + retry/continue-cap/fallback policies
+- integrate decision-agent session management
 
-   Examples of core rules:
-   - If `stage:queued` and missing required fields → move to `stage:needs-clarification` and comment with questions.
-   - If clarified (answers present) → move to `stage:ready-to-implement`.
-   - If blocked keyword detected → move to `stage:blocked` and request dependency.
+Phase 5: session lifecycle hardening
+- per-ticket worker session reuse + archival rules
+- decision session rotation policy
 
-6) **Action execution (idempotent)**
-   - for each planned action, compute `action_id = hash(adapter + work_item_id + kind + dedupe_key)`.
-   - if `action_id` exists in `emitted_actions`, skip.
-   - otherwise call adapter write method; record result.
+Phase 6: docs/tests cleanup
+- update README/SKILL to match requirements
+- remove obsolete tests, add loop-focused tests
 
-7) **Report**
-   - print a compact summary: events ingested, actions executed/skipped, errors.
+## 11) Testing strategy
 
-**Error strategy**:
-- Fail-soft per project; continue other projects.
-- Persist cursors only after successful poll parse; never advance cursor past unprocessed events.
+Unit tests (pure logic):
+- ordering across projects
+- report parsing sufficiency
+- continue cap coercion
+- fallback policy
+- session rotation thresholds
 
----
+Integration tests (loop):
+- active worker blocks new selection
+- retry once then forced blocked
+- decision invalid -> blocked
+- blocked ticket resume reuses same worker session
+- blocked inactivity archival at 7 days
 
-## 6) Snapshot-diff event synthesis (poll mode)
+Adapter tests (Plane):
+- identity gating correctness
+- create with mandatory project id + assignment failure handling
+- show payload completeness with silent optional fields
 
-When platforms don’t provide a usable event feed, implement:
+## 12) Operational notes
 
-- Poll list of work items (possibly since `updated_at >= last_tick` when supported).
-- For each work item, compute a **normalized snapshot** (stable field ordering).
-- Compare `payload_hash` to stored `snapshots.payload_hash`.
-- If changed, emit `WorkItemUpdated` and (if stage differs) also `StageChanged`.
-- Store new snapshot.
-
-Normalization should exclude noisy fields (view counts, sync tokens) to avoid churn.
-
----
-
-## 7) Repo layout proposal
-
-This skill repo currently is documentation/scripts only. Plan for eventual implementation:
-
-```text
-openclaw-skill-kanban-workflow/
-  SKILL.md
-  references/
-    TECH_PLAN.md
-    schemas/
-      domain.schema.json
-      events.schema.json
-  assets/
-    runbooks/
-    templates/
-  scripts/
-    github/
-      gh_list_items.sh
-      gh_get_item.sh
-  src/ (when code is introduced)
-    kanban-workflow/
-      core/
-        engine.py        # tick loop + rule evaluation
-        rules.py
-        domain.py        # entities + event types
-        state/
-          sqlite.py
-          json.py
-      adapters/
-        github/
-          adapter.py
-        planka/
-          adapter.py
-        openproject/
-          adapter.py
-      cli/
-        main.py          # `kanban-workflow tick`, `kanban-workflow webhook`
-  tests/
-    core/
-    adapters/
-```
-
----
-
-## 8) Milestones checklist (short)
-
-- [ ] Define canonical domain types (Stage, WorkItem, Event) + JSON schema in `references/schemas/`.
-- [ ] Implement `Kanban WorkflowAdapter` port and `PlannedAction` contract in core.
-- [ ] Implement state backends: SQLite (default) + JSON (fallback).
-- [ ] Implement `tick` engine with dedupe + idempotent action execution.
-- [ ] Implement GitHub adapter using `gh` (poll + snapshot diff) and basic write ops (comment, labels/stage mapping).
-- [ ] Add minimal end-to-end harness: `kanban-workflow tick --adapter github --project <repo>`.
-- [ ] Add regression tests for: stage mapping, snapshot diff → events, action dedupe.
+- Preferred scheduler: local system cron running `workflow-loop`.
+- Loop should remain fail-soft and idempotent per tick.
+- All error messages intended for user CLI paths should stay short and direct.

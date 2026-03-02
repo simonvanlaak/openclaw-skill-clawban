@@ -1,225 +1,222 @@
-# Kanban Workflow requirements (draft)
+# Kanban Workflow Requirements (active baseline)
 
-This document captures the initial Q&A requirements for Kanban Workflow’s verb-level workflow API.
+Status: active
+Scope: Plane-only
+Last updated: 2026-03-02
 
-## Design constraints
+This document is the authoritative requirements baseline moving forward.
 
-- **Canonical state machine:** use existing `stage:*` lifecycle.
-- **CLI-first auth:** adapters must use platform CLIs/scripts for auth/session. Kanban Workflow does not run interactive OAuth flows or persist secrets, but adapter CLIs may require environment variables (API keys) and may make HTTPS calls internally.
-- **Multi-scope (future):** Kanban Workflow should support monitoring multiple scopes per adapter (e.g. all Plane projects, multiple Linear teams/projects, multiple GitHub repos/projects). Constraint: all monitored scopes must share consistent stage/state names so a single `stageMap` works.
-- **Assigned-only autopilot:** autopilot selection should be able to operate on items assigned to the current user only (initial implementation: Plane).
-- **Cross-platform:** GitHub, Planka, Plane, Linear.
+## 1) Product direction
 
-## Canonical stage names
+- Kanban Workflow is Plane-only.
+- Remove/ignore GitHub, Linear, and Planka requirements for now.
+- Workflow is autopilot-first.
+- Direct manual CLI mutation commands are removed from user-facing flow.
 
-Kanban Workflow’s canonical stages are (and these are the **only** stages the agent should consider):
+## 2) Canonical stage model
+
+Canonical stages (only stages considered by the workflow):
 
 - `stage:todo`
 - `stage:blocked`
 - `stage:in-progress`
 - `stage:in-review`
 
-Notes:
-- “Done/closed” is platform-specific and not currently part of the canonical stage set.
+Done/closed remains platform-specific and outside the canonical set.
 
-## Setup
+## 3) Setup
 
-Kanban Workflow must provide a `setup` command to configure enabled adapters and scope/order mappings.
+Setup is non-interactive and flags-only.
 
-### Setup command (flags-only)
+Command:
+- `kanban-workflow setup --adapter plane ...`
 
-Setup must be **non-interactive** and configured entirely via flags.
-
-General:
-- `--adapter <github|plane|linear|planka>` (exactly one)
-- `--force` (required to overwrite an existing `config/kanban-workflow.json`)
-
-Stage mapping (required; all 4 stages):
-- `--map-backlog <platform-name>`
-- `--map-blocked <platform-name>`
-- `--map-in-progress <platform-name>`
-- `--map-in-review <platform-name>`
-
-Adapter-specific scope/order flags:
-
-**GitHub**
-- `--github-repo <owner/repo>`
-- `--github-project-number <number>` (explicit backlog ordering)
-
-**Plane**
+Required flags:
+- `--adapter plane`
+- `--force` required to overwrite existing `config/kanban-workflow.json`
+- `--map-backlog <plane-state-name>`
+- `--map-blocked <plane-state-name>`
+- `--map-in-progress <plane-state-name>`
+- `--map-in-review <plane-state-name>`
 - `--plane-workspace-slug <slug>`
-- `--plane-project-id <uuid>`
-- Optional: `--plane-order-field <field>` (only if manual UI order is not detectable; otherwise fallback to updatedAt)
+- `--plane-scope all-projects`
 
-**Linear**
-- Scope (choose exactly one):
-  - `--linear-team-id <id>` or
-  - `--linear-project-id <id>`
-- Ordering:
-  - `--linear-view-id <id>` (preferred; if not accessible, fallback to updatedAt)
+Optional flags:
+- `--plane-order-field <field>`
+- `--autopilot-cron-expr <cron>`
+- `--autopilot-cron-tz <tz>`
+- `--autopilot-install-cron`
+- `--autopilot-requeue-target-stage <stage key>`
 
-**Planka**
-- `--planka-board-id <id>`
-- `--planka-backlog-list-id <id>` (needed for backlog ordering by card position; other stages can be mapped by list name)
+Setup validations:
+- Fail hard if Plane CLI/auth prerequisites fail.
+- Validate read prerequisites for `show` and selection prerequisites for `workflow-loop`.
+- Validations are read-only.
 
-### Setup validations
+Config:
+- Single config profile only.
+- Stored at `config/kanban-workflow.json`.
+- Plane scope is all projects; mapped state names must remain consistent across monitored projects.
 
-- Setup must test that required CLIs are installed and authenticated and **fail hard** if the selected adapter check fails.
-- Setup must validate all **read-only verbs** for the selected adapter: `show` prerequisites (read body/description, list comments, list attachments where supported) and `next` prerequisites (list backlog + ordering inputs).
-- Setup validations are **read-only** (no comments/transitions/creates during setup).
+## 4) Command surface (user-facing)
 
-### Config
+Supported user-facing commands:
+- `setup`
+- `show --id <ticket-id>`
+- `create --project-id <uuid> --title "..." [--body "..."]`
+- `workflow-loop [--dry-run]`
 
-- Config storage: store config in-repo (versionable) under `config/kanban-workflow.json`.
-- Only **one** config file/profile is supported (no multiple profiles).
+Not part of user-facing flow:
+- Direct manual mutation commands (`start`, `update`, `ask`, `complete`) are removed.
+- Any legacy human-invoked mutation aliases are out of scope.
 
-## UX requirement: next-step tips
+## 5) Core behavior requirements
 
-Every verb execution must output a **"What next"** tip.
+### 5.1 `show`
 
-- If setup is not completed (no valid `config/kanban-workflow.json`), **all commands** must error and instruct the user to complete setup.
-- After successful `setup`: suggest `next`.
-- After `next`: suggest `start`.
-- After `start`: suggest `ask` or `update`.
-  - Additionally, after `start` include a tip to run the actual execution/implementation work in a **subagent**.
-- After `ask`: suggest `next`.
-- After `update`: suggest `complete`.
-- After `complete`: suggest `next`.
+`show` returns full Plane ticket context for implementation work.
 
-## Required verbs (MVP)
+Required fields:
+- id
+- title
+- URL (if available)
+- canonical stage
+- full description/body (best available full text)
+- labels (if available)
+- assignees
+- updatedAt
+- last 10 comments (newest first), including internal/private comments when available
 
-### 0) `show`
+Each comment entry includes:
+- author (best available identity fields)
+- timestamp
+- content
 
-**Goal:** show the content of a specific ticket/work item on demand (even if it is not the next item).
+Optional fields (when available from Plane surfaces):
+- attachments
+- linked/related ticket summaries
 
-- Input: platform scope + work item identifier.
-- Output: title, current stage, URL, **full body/description**, relevant metadata (assignees/labels/state), **attachments (filename + URL) where supported**, and the **last 10 comments** (most recent first), including **private/internal** comments where supported.
-  - Each comment entry includes: **author + timestamp + content**.
-- Also include: titles of any linked/related tickets (e.g., blocks/blocked-by/duplicates) where supported.
-- Use case: follow linked/blocked tickets during implementation.
+Behavior for optional fields:
+- Missing optional fields are silent; do not error when attachment/link data is unavailable.
 
-### 1) `next`
+### 5.2 `create`
 
-**Goal:** return the next work item the agent should work on.
+- Input: project id + title + Markdown body.
+- `--project-id` is mandatory.
+- Create in Plane backlog stage (`stage:todo`) via explicit stage enforcement.
+- Must assign to the current authenticated user.
+- Fail hard if self-resolution fails.
+- Fail hard if assignment fails.
+- Does not auto-start.
+- Failure messages should be short and direct.
 
-- `next` returns **exactly one** ticket (no "up next" list).
-- `next` must return the same payload shape as `show` (i.e., it should reuse the `show` implementation to display the selected ticket: full body/description, last 10 comments incl. private, and titles of linked/related tickets where supported).
+### 5.3 Comment/stage mutation semantics
 
-- Primary need: *only* `next` for discovery/selection.
-- Selection policy TBD (see open questions), but should be deterministic.
+Workflow-level mutation outcomes remain:
+- progress update comment (no stage change)
+- clarification/block comment + move to `stage:blocked`
+- completion comment + move to `stage:in-review`
+- start/move to `stage:in-progress`
 
-### 2) `update`
+These are automation/engine actions, not direct user-facing CLI commands.
 
-- Post a progress update comment on a task.
-- **No enforced template**; post the provided text as-is.
-- No stage change.
+## 6) Workflow Loop
 
-### 3) `complete`
+### 6.1 Autopilot-first operation
 
-- Requires a short completion **summary** string.
-- Post a **Completed** comment including that summary.
-- Move the task to `stage:in-review`.
+`workflow-loop` is the primary execution path.
 
-### 4) `ask`
+Identity gating:
+- All workflow-loop selection and work-permission checks are enforced by authenticated worker identity.
+- Only tickets assigned to the authenticated worker (`whoami`) are actionable.
 
-- Requires clarification request **text**.
-- Post a clarification request comment including that text.
-- Move the task to `stage:blocked`.
+Worker execution model:
+- Workflow-loop starts worker runs via OpenClaw subagent session spawn (`sessions_spawn`).
+- Worker executes in isolated session and produces a final Markdown work report.
+- Workflow-loop consumes worker result (announce payload and/or transcript), evaluates forced-choice policy, then performs exactly one mutation action.
+- Worker sessions are per-ticket and persistent across ticket pauses/requeues (e.g., blocked -> unblocked resume) so prior ticket-specific context is preserved.
+- Worker session closes/archives when the ticket is completed.
+- For blocked tickets, archive worker session after 7 days of inactivity.
+- No additional session-summary persistence is required; ticket comments are the source of historical context.
+- Workflow-loop enforces single active worker at a time.
+- While a worker is active, workflow-loop must not select/start new ticket work; it performs housekeeping only:
+  - worker completion/status checks
+  - retry/fallback enforcement
+  - auto-reopen processing
+  - no-work detection when applicable
+- Decision-agent sessions use bounded rolling reuse:
+  - maximum 5 tickets per decision-agent session
+  - no time-based rotation limit
+  - auto-rotate early when session context reaches 50% of configured context budget
 
-### 5) `start`
+### 6.2 Auto-reopen
 
-- Required stage change verb: `start`.
-- Behavior: transition task into `stage:in-progress`.
-- No comment is posted on `start`.
+Trigger:
+- Human comment on a ticket currently in `stage:blocked` or `stage:in-review`.
 
-### 6) `create`
+Action:
+- Move ticket silently to `stage:todo`.
+- No automatic reopen comment.
 
-**Goal:** create a new task in `stage:todo` and automatically assign it to the agent itself.
+### 6.3 Continuous timed progress comments
 
-- Must create work item in the target platform.
-- Must apply/encode `stage:todo`.
-- Must assign to the agent identity.
-- Keep `create` minimal for now (no linked-ticket relationships created at creation time).
-- `create` does **not** auto-start; it leaves the task in `stage:todo`.
+- Disabled.
+- Remove periodic 5-minute auto progress-comment behavior and implementation.
 
-## Not required (explicitly)
+### 6.4 In-progress auto-heal
 
-- Assignment verbs (`assign`, `unassign`) are **not** needed beyond `create` auto-assign.
-- Explicit `transition` to `stage:in-review` is **not** needed (happens automatically on `complete`).
-- `sync-stages` is **not** needed.
+- Auto-heal behavior is enabled.
+- If in-progress state drifts beyond allowed worker limits, automation deterministically keeps the newest in-progress ticket and moves older extra tickets back to `stage:todo` for the same authenticated worker.
 
-## Continuous status updates (5-minute cadence)
+### 6.5 Completion/blocked/continue decision policy
 
-While a task is in `stage:in-progress`, Kanban Workflow must post an **automatic progress update comment every 5 minutes** describing:
+- Forced-choice decision policy is required.
+- Decision source is decision-agent output from worker report facts (not worker self-finalization).
+- Worker report format is Markdown (human-readable), not strict JSON.
+- Worker report parsing is flexible (no strict section-header schema required initially).
+- Required report facts:
+  - verification evidence
+  - blockers with status (`open` or `resolved`)
+  - uncertainties
+  - confidence (`0.0` to `1.0`)
+- Decision baseline:
+  - `completed` requires verification evidence and resolved blockers
+  - blockers and uncertainties are required decision signals
+  - decision agent must choose exactly one of: `continue`, `blocked`, `completed`
+- No-decision prevention:
+  - there must never be a no-decision outcome
+  - if decision output is missing/invalid/ambiguous, default to `blocked`
+- `confidence` is required telemetry but does not directly gate decision.
+- Workflow-loop applies one mutation per decision and adds a corresponding ticket comment when mutating.
+- If worker report is insufficient/unparseable, workflow-loop performs exactly one in-session retry request specifying missing report elements.
+- If retry output is still insufficient/unparseable, workflow-loop must invoke decision-agent evaluation and then apply one forced-choice decision with default fallback to `blocked`.
+- Worker dispatch metadata must include correlation fields: `ticketId` and `dispatchRunId`.
+- Workflow-loop retry prompt should include missing-items guidance only (no full prior-report echo required).
+- No separate per-run decision artifact file is required; decision context is retained in workflow-loop session history.
+- On failed retry fallback, workflow-loop immediately applies `blocked` when decision output is missing/invalid/ambiguous.
+- Per ticket, `continue` is hard-limited to 2 decisions.
+- After 2 `continue` decisions for the same ticket, workflow-loop must only allow `blocked` or `completed`.
+- If decision agent selects `continue` after the cap is reached, workflow-loop must coerce decision to `blocked`.
 
-- what is currently being worked on
-- what the next step is
+## 7) Scope exclusions
 
-This should stop when the task leaves `stage:in-progress`.
+Out of scope for this baseline:
+- GitHub adapter
+- Linear adapter
+- Planka adapter
+- Plane-only helper command `needs-my-attention`
+- Legacy command `autopilot-tick` (must be removed from CLI, docs, tests, and runtime flow)
 
-## Automation rules
+## 8) Documentation sync
 
-### Auto-reopen
+When behavior changes, keep these in sync:
+- `references/REQUIREMENTS.md` (authoritative)
+- `README.md`
+- `SKILL.md`
 
-Reopening should happen automatically when a human comments on a task that is:
+## 9) Notes to revisit later
 
-- `stage:blocked`, or
-- `stage:in-review`
-
-Reopen target stage:
-- On human comment, automatically move the task to `stage:todo`.
-- Auto-reopen is silent (no automatic comment is posted).
-
-## CLI identity discovery (“self”) requirement
-
-For `create` (auto-assign to self) and any future ownership logic, Kanban Workflow must be able to discover the current authenticated user from the platform CLI.
-
-- **GitHub:** use `gh api user` → `login`
-- **Linear:** use `scripts/linear_json.sh whoami` (JSON; requires `LINEAR_API_KEY`)
-- **Plane:** use ClawHub skill `plane` (owner: `vaguilera-jinko`): `plane me` (JSON)
-- **Planka:** `planka-cli status` shows the current user, but output is human-formatted.
-  - **Recommended approach:** ship a small **wrapper script** (CLI-auth compliant) that returns `whoami` as **JSON** for Planka, rather than parsing formatted output.
-
-## Clarified implementation rules
-
-### `next`
-
-- Guard:
-  - If **exactly 1** task is in `stage:in-progress`: `next` returns an error (don’t assign a second task).
-  - If **more than 1** task is in `stage:in-progress`: `next` returns an error (inconsistent state).
-- Ignore `stage:in-review` for selection.
-- Eligible pool: select from `stage:todo`.
-- Empty backlog: return an **info** response (“no work to do”).
-- Ordering:
-  - Prefer explicit human ordering when available (configured during setup; see adapter-specific flags).
-  - Otherwise fallback to `updatedAt` descending.
-
-### `create` stage + assignment
-
-- Input: title + Markdown body.
-- Stage on create: do **not** override platform defaults at runtime; rely on the platform configuration done during onboarding/setup.
-  - (I.e., the platform’s “new item” default should correspond to the mapped canonical `stage:todo`.)
-- Assignment: must assign to self as discovered via the CLI `whoami` mechanism; **fail hard** if self cannot be resolved or assignment cannot be performed.
-
-### Auto-reopen
-
-- Trigger: human comment on a task in `stage:blocked` or `stage:in-review`.
-- Action: silently move the task to `stage:todo`.
-
-### Message formats
-
-- All user-provided text for `update/ask/complete` is **Markdown**.
-- Adapters may convert Markdown to platform-native formats if required, but Markdown is the canonical input.
-
-## Documentation requirements
-
-- When implementing or changing behavior, keep **README.md** and **SKILL.md** in sync with the current requirements and available commands.
-
-## Implementation notes (for later)
-
-- These verbs imply the adapter port must support idempotent writes:
-  - post comment
-  - create work item
-  - set stage (platform state/labels/lists)
-  - set assignee (create only)
-- `next` + auto-reopen require polling/diffing event detection unless the platform webhook/CLI provides events.
+Potential future re-expansion topics (not active now):
+- Re-introducing multi-adapter support
+- Re-introducing direct manual mutation CLI commands
+- Enriching Plane attachment/link extraction if API/CLI supports it reliably

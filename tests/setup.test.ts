@@ -43,8 +43,9 @@ describe('setup', () => {
         config: {
           version: 1,
           adapter: {
-            kind: 'github',
-            repo: 'o/r',
+            kind: 'plane',
+            workspaceSlug: 'ws',
+            projectIds: ['p1'],
             stageMap: {
               'stage:todo': 'stage:todo',
               'stage:blocked': 'stage:blocked',
@@ -74,8 +75,9 @@ describe('setup', () => {
         config: {
           version: 1,
           adapter: {
-            kind: 'github',
-            repo: 'o/r',
+            kind: 'plane',
+            workspaceSlug: 'ws',
+            projectIds: ['p1'],
             stageMap: {
               'stage:todo': 'stage:todo',
               'stage:blocked': 'stage:blocked',
@@ -102,8 +104,9 @@ describe('setup', () => {
       config: {
         version: 1,
         adapter: {
-          kind: 'github',
-          repo: 'o/r',
+          kind: 'plane',
+          workspaceSlug: 'ws',
+          projectIds: ['p1'],
           stageMap: {
             'stage:todo': 'stage:todo',
             'stage:blocked': 'stage:blocked',
@@ -117,6 +120,6 @@ describe('setup', () => {
 
     expect(validate).toHaveBeenCalledOnce();
     expect(fs.exists('config/kanban-workflow.json')).toBe(true);
-    expect(fs.get('config/kanban-workflow.json')).toMatch(/"github"/);
+    expect(fs.get('config/kanban-workflow.json')).toMatch(/"plane"/);
   });
 });

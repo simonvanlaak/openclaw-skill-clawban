@@ -6,7 +6,6 @@ export * from './adapter.js';
 export * from './runner.js';
 export * from './adapters/index.js';
 
-export * from './automation/progress_updates.js';
 export * from './automation/auto_reopen.js';
 export * from './automation/worker_contract.js';
 

@@ -28,49 +28,17 @@ export const ClawbanConfigV1Schema = z.object({
       requeueTargetStage: StageKeySchema.default('stage:todo'),
     })
     .optional(),
-  adapter: z.discriminatedUnion('kind', [
-    z.object({
-      kind: z.literal('github'),
-      repo: z.string().min(1),
-      /** Explicit ordering source: GitHub Project number (optional). */
-      project: z
-        .object({
-          number: z.number().int().positive(),
-          owner: z.string().min(1),
-        })
-        .optional(),
-      stageMap: StageMapSchema,
-    }),
-    z.object({
-      kind: z.literal('linear'),
-      /** Explicit ordering via Linear view id (manual view order). */
-      viewId: z.string().optional(),
-      /** Provide either teamId OR projectId when viewId is not provided (exactly one). */
-      teamId: z.string().optional(),
-      projectId: z.string().optional(),
-      stageMap: StageMapSchema,
-    }),
-    z.object({
-      kind: z.literal('plane'),
-      workspaceSlug: z.string().min(1),
-      /** Single project scope (legacy). */
-      projectId: z.string().min(1).optional(),
-      /** Multi-project scope (preferred for autopilot). */
-      projectIds: z.array(z.string().min(1)).optional(),
-      /** Explicit ordering field name when UI order can't be discovered. */
-      orderField: z.string().min(1).optional(),
-      stageMap: StageMapSchema,
-    }),
-    z.object({
-      kind: z.literal('planka'),
-      /** Board scope for listing cards. */
-      boardId: z.string().min(1),
-      /** Needed for explicit backlog ordering by card position. */
-      backlogListId: z.string().min(1),
-      bin: z.string().optional(),
-      stageMap: StageMapSchema,
-    }),
-  ]),
+  adapter: z.object({
+    kind: z.literal('plane'),
+    workspaceSlug: z.string().min(1),
+    /** Single project scope (legacy). */
+    projectId: z.string().min(1).optional(),
+    /** Multi-project scope (preferred for workflow-loop). */
+    projectIds: z.array(z.string().min(1)).optional(),
+    /** Explicit ordering field name when UI order can't be discovered. */
+    orderField: z.string().min(1).optional(),
+    stageMap: StageMapSchema,
+  }),
 });
 
 export type ClawbanConfigV1 = z.infer<typeof ClawbanConfigV1Schema>;

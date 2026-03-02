@@ -27,6 +27,7 @@ export type SessionEntry = {
   lastState: 'in_progress' | 'blocked' | 'completed' | 'no_work';
   lastSeenAt: string;
   closedAt?: string;
+  continueCount?: number;
 };
 
 export type SessionMap = {
@@ -231,7 +232,11 @@ function finalizeTicket(map: SessionMap, ticketId: string, state: 'blocked' | 'c
   if (!entry) return null;
   entry.lastState = state;
   entry.lastSeenAt = nowIso;
-  entry.closedAt = nowIso;
+  if (state === 'completed') {
+    entry.closedAt = nowIso;
+  } else {
+    delete entry.closedAt;
+  }
   if (map.active?.ticketId === ticketId) {
     map.active = undefined;
   }
@@ -251,13 +256,18 @@ export function applyWorkerCommandToSessionMap(
   entry.lastSeenAt = nowIso;
   if (command.kind === 'continue') {
     entry.lastState = 'in_progress';
+    entry.continueCount = (entry.continueCount ?? 0) + 1;
     delete entry.closedAt;
     map.active = { ticketId, sessionId: entry.sessionId };
     return map;
   }
 
   entry.lastState = command.kind;
-  entry.closedAt = nowIso;
+  if (command.kind === 'completed') {
+    entry.closedAt = nowIso;
+  } else {
+    delete entry.closedAt;
+  }
   if (map.active?.ticketId === ticketId) {
     map.active = undefined;
   }
@@ -414,17 +424,13 @@ function buildWorkInstruction(ticketId: string, payload: any, sessionLabel: stri
     '',
     'Execution contract (mandatory):',
     '- Perform at least one concrete execution step this turn (tool call, command, or file/code change), unless truly blocked by external dependency.',
-    '- Include an EVIDENCE section before your final command with:',
-    '  - what was executed,',
-    '  - key result/output,',
-    '  - changed files (if any).',
+    '- Respond with a markdown report only (no terminal commands).',
+    '- Include required facts in the report:',
+    '  - verification evidence',
+    '  - blockers with status (open/resolved)',
+    '  - uncertainties',
+    '  - confidence (0.0..1.0)',
     '- Do not post boilerplate progress spam. Report only evidence-backed updates.',
-    '- If no concrete execution happened, do NOT use continue. Use blocked instead.',
-    '',
-    'You must end this turn with exactly one command (final non-empty line):',
-    '- kanban-workflow continue --text "<status update + next steps>"',
-    '- kanban-workflow blocked --text "<blocker reason + concrete ask>"',
-    '- kanban-workflow completed --result "<what was finished>"',
     '',
     'CONTEXT_JSON',
     contextJson,

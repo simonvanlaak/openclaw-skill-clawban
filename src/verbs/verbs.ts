@@ -63,9 +63,10 @@ export async function complete(adapter: VerbAdapter, id: string, summary: string
 }
 
 export async function create(adapter: VerbAdapter, input: CreateInput): Promise<{ id: string; url?: string }> {
+  if (!input.projectId?.trim()) throw new Error('create requires projectId');
   if (!input.title.trim()) throw new Error('create requires title');
   // body can be empty but should be provided as markdown
-  return adapter.createInBacklogAndAssignToSelf({ title: input.title, body: input.body ?? '' });
+  return adapter.createInBacklogAndAssignToSelf({ projectId: input.projectId, title: input.title, body: input.body ?? '' });
 }
 
 export async function setStage(adapter: VerbAdapter, id: string, stage: StageKey): Promise<void> {

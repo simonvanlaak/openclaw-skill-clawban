@@ -79,6 +79,6 @@ PY
   fi
 
   cd "$SKILL_DIR"
-  npm run -s kanban-workflow -- cron-dispatch --agent kanban-workflow-worker
+  npm run -s kanban-workflow -- workflow-loop
   echo "[$(date -u +%FT%TZ)] END dispatcher-cron.sh"
 } >> "$LOG_FILE" 2>&1

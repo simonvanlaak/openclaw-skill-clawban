@@ -169,7 +169,7 @@ export class LinearAdapter implements Adapter {
     throw new Error('LinearAdapter.addComment not implemented (requires linear-cli write support)');
   }
 
-  async createInBacklogAndAssignToSelf(_input: { title: string; body: string }): Promise<{ id: string; url?: string }> {
+  async createInBacklogAndAssignToSelf(_input: { title: string; body: string; projectId?: string }): Promise<{ id: string; url?: string }> {
     throw new Error('LinearAdapter.create not implemented (requires linear-cli write support)');
   }
 

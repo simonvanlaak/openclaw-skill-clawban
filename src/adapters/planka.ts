@@ -114,7 +114,7 @@ export class PlankaAdapter implements Adapter {
     throw new Error('PlankaAdapter.addComment not implemented (requires planka-cli write support)');
   }
 
-  async createInBacklogAndAssignToSelf(_input: { title: string; body: string }): Promise<{ id: string; url?: string }> {
+  async createInBacklogAndAssignToSelf(_input: { title: string; body: string; projectId?: string }): Promise<{ id: string; url?: string }> {
     throw new Error('PlankaAdapter.create not implemented (requires planka-cli write support)');
   }
 

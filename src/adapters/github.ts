@@ -388,7 +388,7 @@ export class GitHubAdapter implements Adapter {
     }
   }
 
-  async createInBacklogAndAssignToSelf(input: { title: string; body: string }): Promise<{ id: string; url?: string }> {
+  async createInBacklogAndAssignToSelf(input: { title: string; body: string; projectId?: string }): Promise<{ id: string; url?: string }> {
     const self = await this.whoami();
     if (!self.username) {
       throw new Error('Unable to self-assign: gh whoami did not return username');

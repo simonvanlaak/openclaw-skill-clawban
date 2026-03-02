@@ -36,9 +36,9 @@ describe('session dispatcher', () => {
     expect(first.actions[0]?.text).toContain('WORKER_AGENT_MD (mandatory instructions loaded at task start):');
     expect(first.actions[0]?.text).toContain('## 2) Plane skill usage (required when task touches Plane)');
     expect(first.actions[0]?.text).toContain('must be stored on Nextcloud');
-    expect(first.actions[0]?.text).toContain('kanban-workflow continue --text');
-    expect(first.actions[0]?.text).toContain('kanban-workflow blocked --text');
-    expect(first.actions[0]?.text).toContain('kanban-workflow completed --result');
+    expect(first.actions[0]?.text).toContain('Respond with a markdown report only');
+    expect(first.actions[0]?.text).toContain('verification evidence');
+    expect(first.actions[0]?.text).toContain('confidence (0.0..1.0)');
     expect(first.actions[0]?.text).toContain('"title": "Fix login race"');
     expect(first.actions[0]?.text).toContain('"attachments"');
     expect(first.actions[0]?.text).toContain('"links"');

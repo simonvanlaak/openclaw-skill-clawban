@@ -727,8 +727,8 @@ export class PlaneAdapter implements Adapter {
     await this.postCommentViaApi(projectId, String(id), msg);
   }
 
-  async createInBacklogAndAssignToSelf(input: { title: string; body: string }): Promise<{ id: string; url?: string }> {
-    const projectId = this.getSingleProjectId('create');
+  async createInBacklogAndAssignToSelf(input: { title: string; body: string; projectId?: string }): Promise<{ id: string; url?: string }> {
+    const projectId = input.projectId ? String(input.projectId) : this.getSingleProjectId('create');
     const backlogStateId = await this.resolveStateIdForStage('stage:todo');
 
     const created = (await this.runJson([
@@ -747,24 +747,19 @@ export class PlaneAdapter implements Adapter {
     const id = created?.id ? String(created.id) : undefined;
     if (!id) throw new Error('PlaneAdapter.create: could not read created issue id from CLI output');
 
-    // Best-effort assign-to-self.
-    try {
-      const me = await this.whoami();
-      if (me.id) {
-        await this.cli.run([
-          ...this.baseArgs,
-          ...this.formatArgs,
-          'issues',
-          'assign',
-          '--project',
-          projectId,
-          id,
-          me.id,
-        ]);
-      }
-    } catch {
-      // ignore
-    }
+    const me = await this.whoami();
+    if (!me.id) throw new Error('create: cannot resolve self user');
+
+    await this.cli.run([
+      ...this.baseArgs,
+      ...this.formatArgs,
+      'issues',
+      'assign',
+      '--project',
+      projectId,
+      id,
+      me.id,
+    ]);
 
     return { id, url: created?.url ? String(created.url) : undefined };
   }

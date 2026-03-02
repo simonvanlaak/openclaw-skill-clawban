@@ -6,10 +6,7 @@ import { execa } from 'execa';
 
 import { loadConfigFromFile } from './config.js';
 import { runSetup } from './setup.js';
-import { GitHubAdapter } from './adapters/github.js';
-import { LinearAdapter } from './adapters/linear.js';
 import { PlaneAdapter } from './adapters/plane.js';
-import { PlankaAdapter } from './adapters/planka.js';
 import { runAutopilotTick } from './automation/autopilot_tick.js';
 import { runAutoReopenOnHumanComment } from './automation/auto_reopen.js';
 import { lockfile } from './automation/lockfile.js';
@@ -20,7 +17,7 @@ import {
   saveSessionMap,
   type SessionMap,
 } from './automation/session_dispatcher.js';
-import { extractWorkerTerminalCommand, validateWorkerResponseContract, type WorkerTerminalCommand } from './automation/worker_contract.js';
+import { extractWorkerTerminalCommand, type WorkerTerminalCommand } from './automation/worker_contract.js';
 import { StageKeySchema } from './stage.js';
 import { ask, complete, create, next, show, start, update } from './verbs/verbs.js';
 
@@ -34,27 +31,14 @@ export type CliIo = {
 function whatNextTipForCommand(cmd: string): string {
   switch (cmd) {
     case 'setup':
-      return 'run `kanban-workflow next`';
-    case 'next':
-      return 'run `kanban-workflow autopilot-tick`';
-    case 'start':
-      return 'prefer `kanban-workflow autopilot-tick` for orchestrated flow';
-    case 'ask':
-    case 'update':
-    case 'complete':
-    case 'continue':
-    case 'blocked':
-    case 'completed':
-      return 'run `kanban-workflow autopilot-tick`';
-    case 'autopilot-tick':
-    case 'cron-dispatch':
-      return 'follow the returned instruction and use only: continue, blocked, completed';
+      return 'run `kanban-workflow workflow-loop`';
+    case 'workflow-loop':
+      return 'wait for the next scheduler tick';
     case 'show':
     case 'create':
-    case 'needs-my-attention':
-      return 'run `kanban-workflow next`';
+      return 'run `kanban-workflow workflow-loop`';
     default:
-      return 'run `kanban-workflow next`';
+      return 'run `kanban-workflow workflow-loop`';
   }
 }
 
@@ -82,21 +66,12 @@ function writeHelp(io: CliIo): void {
       'kanban-workflow help',
       '',
       'Core commands:',
-      '  kanban-workflow setup --adapter <github|plane|linear|planka> ...',
-      '  kanban-workflow autopilot-tick [--dry-run]',
-      '  kanban-workflow cron-dispatch [--dry-run] [--agent <id>] [--thinking <level>]',
-      '  kanban-workflow enforce-runtime',
+      '  kanban-workflow setup --adapter plane ...',
+      '  kanban-workflow workflow-loop [--dry-run]',
       '  kanban-workflow show --id <ticket-id>',
-      '  kanban-workflow needs-my-attention',
-      '  kanban-workflow next',
-      '',
-      'Execution commands (no --id required; uses active ticket context):',
-      '  kanban-workflow continue --text "update + next steps"',
-      '  kanban-workflow blocked --text "block reason + questions for humans"',
-      '  kanban-workflow completed --result "what was done"',
       '',
       'Other:',
-      '  kanban-workflow create --title "..." [--body "..."]',
+      '  kanban-workflow create --project-id <uuid> --title "..." [--body "..."]',
       '',
     ].join('\n'),
   );
@@ -118,7 +93,7 @@ const PLANE_ENV_HELPER = '/root/.openclaw/workspace/scripts/plane_env.sh';
 const DISPATCHER_AGENT_ID = 'kanban-workflow-dispatcher';
 const WORKER_AGENT_ID = 'kanban-workflow-worker';
 const DEFAULT_NO_WORK_ALERT_CHANNEL = 'rocketchat';
-const DEFAULT_NO_WORK_ALERT_TARGET = 'simon.vanlaak';
+const DEFAULT_NO_WORK_ALERT_TARGET = '@simon.vanlaak';
 const WORKER_DELEGATION_DIR = '.tmp/kwf-worker-delegations';
 const DEFAULT_WORKER_SYNC_TIMEOUT_MS = 30_000;
 const DEFAULT_WORKER_BACKGROUND_TIMEOUT_MS = 15 * 60_000;
@@ -636,6 +611,130 @@ type NoWorkAlertResult = {
   detail?: string;
 };
 
+type WorkerReportFacts = {
+  hasVerification: boolean;
+  hasBlockers: boolean;
+  hasUncertainties: boolean;
+  hasConfidence: boolean;
+  missing: string[];
+};
+
+type DecisionChoice = 'continue' | 'blocked' | 'completed';
+
+function extractWorkerReportFacts(report: string): WorkerReportFacts {
+  const text = String(report ?? '');
+  const lower = text.toLowerCase();
+
+  const hasVerification = /\bverification\b/.test(lower);
+  const hasBlockers = /\bblocker(s)?\b/.test(lower) && (/\bopen\b/.test(lower) || /\bresolved\b/.test(lower));
+  const hasUncertainties = /\buncertaint(y|ies)\b/.test(lower);
+  const hasConfidence = /\bconfidence\b/.test(lower) && /\b(0(\.\d+)?|1(\.0+)?)\b/.test(lower);
+
+  const missing: string[] = [];
+  if (!hasVerification) missing.push('verification evidence');
+  if (!hasBlockers) missing.push('blockers with open/resolved status');
+  if (!hasUncertainties) missing.push('uncertainties');
+  if (!hasConfidence) missing.push('confidence (0.0..1.0)');
+
+  return { hasVerification, hasBlockers, hasUncertainties, hasConfidence, missing };
+}
+
+function parseDecisionChoice(raw: string): DecisionChoice | null {
+  const text = String(raw ?? '').trim().toLowerCase();
+  if (!text) return null;
+  if (/\bcompleted\b/.test(text)) return 'completed';
+  if (/\bblocked\b/.test(text)) return 'blocked';
+  if (/\bcontinue\b/.test(text)) return 'continue';
+  return null;
+}
+
+function continueCountForTicket(map: SessionMap, ticketId: string): number {
+  const entry = (map.sessionsByTicket ?? {})[ticketId] as any;
+  const n = Number(entry?.continueCount ?? 0);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+function buildRetryPrompt(missing: string[]): string {
+  return [
+    'Your previous report is missing required elements.',
+    `Missing items: ${missing.join(', ')}`,
+    'Reply with markdown report only and include the missing items.',
+  ].join('\n');
+}
+
+function summarizeReportForComment(report: string, maxChars = 1200): string {
+  const compact = String(report ?? '').trim().replace(/\s+/g, ' ');
+  if (!compact) return 'No report details provided.';
+  return compact.length > maxChars ? `${compact.slice(0, maxChars).trimEnd()}...` : compact;
+}
+
+async function decideWithAgent(params: {
+  map: SessionMap;
+  ticketId: string;
+  report: string;
+  facts: WorkerReportFacts;
+}): Promise<DecisionChoice | null> {
+  const mapAny = params.map as any;
+  const decisionAgentId = (process.env.KWF_DECISION_AGENT_ID ?? 'kanban-workflow-decision').trim() || 'kanban-workflow-decision';
+  const maxTicketsPerSession = 5;
+  const maxChars = 20_000;
+  const rotateAt = 0.5;
+
+  const state = (mapAny.decisionSession ??= {
+    sessionId: randomUUID(),
+    ticketsUsedCount: 0,
+    contextChars: 0,
+  });
+
+  const usageRatio = (state.contextChars ?? 0) / maxChars;
+  if ((state.ticketsUsedCount ?? 0) >= maxTicketsPerSession || usageRatio >= rotateAt) {
+    state.sessionId = randomUUID();
+    state.ticketsUsedCount = 0;
+    state.contextChars = 0;
+  }
+
+  const prompt = [
+    'Decide exactly one workflow outcome for this ticket.',
+    'Allowed labels: continue, blocked, completed.',
+    'Respond with one word only.',
+    `Ticket: ${params.ticketId}`,
+    `Missing required report fields: ${params.facts.missing.length > 0 ? params.facts.missing.join(', ') : 'none'}`,
+    '',
+    'WORKER_REPORT',
+    params.report,
+  ].join('\n');
+
+  const payload = {
+    idempotencyKey: randomUUID(),
+    message: prompt,
+    agentId: decisionAgentId,
+    sessionKey: makeWorkerSessionKey(decisionAgentId, state.sessionId),
+    thinking: 'low',
+  };
+
+  try {
+    const run = await execa('openclaw', [
+      'gateway',
+      'call',
+      'agent',
+      '--expect-final',
+      '--json',
+      '--timeout',
+      '30000',
+      '--params',
+      JSON.stringify(payload),
+    ]);
+
+    const parsed = parseWorkerOutputFromGatewayCall(run.stdout, run.stderr);
+    state.ticketsUsedCount = Number(state.ticketsUsedCount ?? 0) + 1;
+    state.contextChars = Number(state.contextChars ?? 0) + prompt.length + parsed.workerOutput.length;
+
+    return parseDecisionChoice(parsed.workerOutput);
+  } catch {
+    return null;
+  }
+}
+
 function noWorkTickFromOutput(output: any): { kind?: string; reasonCode?: string } {
   const tick = output?.tick ?? output;
   if (!tick || typeof tick !== 'object') return {};
@@ -732,7 +831,8 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
       const force = Boolean(flags.force);
 
       const adapterKind = String(flags.adapter ?? '').trim();
-      if (!adapterKind) throw new Error('setup requires --adapter <github|plane|linear|planka>');
+      if (!adapterKind) throw new Error('setup requires --adapter plane');
+      if (adapterKind !== 'plane') throw new Error('setup currently supports only --adapter plane');
 
       const mapBacklog = String(flags['map-backlog'] ?? '').trim();
       const mapBlocked = String(flags['map-blocked'] ?? '').trim();
@@ -757,51 +857,19 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
 
       let adapterCfg: any;
 
-      if (adapterKind === 'github') {
-        const repo = String(flags['github-repo'] ?? '').trim();
-        if (!repo) throw new Error('setup --adapter github requires --github-repo <owner/repo>');
-
-        const number = flags['github-project-number'] ? Number(flags['github-project-number']) : undefined;
-        const owner = repo.includes('/') ? repo.split('/')[0] : undefined;
-
-        adapterCfg = {
-          kind: 'github',
-          repo,
-          project: owner && number ? { owner, number } : undefined,
-          stageMap,
-        };
-      } else if (adapterKind === 'linear') {
-        const teamId = flags['linear-team-id'] ? String(flags['linear-team-id']) : undefined;
-        const projectId = flags['linear-project-id'] ? String(flags['linear-project-id']) : undefined;
-
-        if ((teamId ? 1 : 0) + (projectId ? 1 : 0) !== 1) {
-          throw new Error('setup --adapter linear requires exactly one scope: --linear-team-id <id> OR --linear-project-id <id>');
-        }
-
-        adapterCfg = {
-          kind: 'linear',
-          viewId: flags['linear-view-id'] ? String(flags['linear-view-id']) : undefined,
-          teamId,
-          projectId,
-          stageMap,
-        };
-      } else if (adapterKind === 'plane') {
+      if (adapterKind === 'plane') {
         const workspaceSlug = String(flags['plane-workspace-slug'] ?? '').trim();
-        const scope = String(flags['plane-scope'] ?? 'project').trim();
+        const scope = String(flags['plane-scope'] ?? '').trim();
         const projectId = String(flags['plane-project-id'] ?? '').trim();
         if (!workspaceSlug) throw new Error('setup --adapter plane requires --plane-workspace-slug <slug>');
 
-        if (scope !== 'project' && scope !== 'all-projects') {
-          throw new Error('setup --adapter plane: --plane-scope must be project|all-projects');
-        }
-
-        if (scope === 'project' && !projectId) {
-          throw new Error('setup --adapter plane --plane-scope project requires --plane-project-id <uuid>');
+        if (scope !== 'all-projects') {
+          throw new Error('setup --adapter plane requires --plane-scope all-projects');
         }
 
         const adapterTmp = new PlaneAdapter({
           workspaceSlug,
-          projectId: scope === 'project' ? projectId : undefined,
+          projectId: projectId || undefined,
           stageMap,
           orderField: flags['plane-order-field'] ? String(flags['plane-order-field']) : undefined,
         });
@@ -841,18 +909,11 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
         adapterCfg = {
           kind: 'plane',
           workspaceSlug,
-          projectId: scope === 'project' ? projectId : undefined,
+          projectId: projectId || undefined,
           projectIds: scope === 'all-projects' ? projectIds : undefined,
           orderField: flags['plane-order-field'] ? String(flags['plane-order-field']) : undefined,
           stageMap,
         };
-      } else if (adapterKind === 'planka') {
-        const boardId = String(flags['planka-board-id'] ?? '').trim();
-        const backlogListId = String(flags['planka-backlog-list-id'] ?? '').trim();
-        if (!boardId) throw new Error('setup --adapter planka requires --planka-board-id <id>');
-        if (!backlogListId) throw new Error('setup --adapter planka requires --planka-backlog-list-id <id>');
-
-        adapterCfg = { kind: 'planka', boardId, backlogListId, stageMap };
       } else {
         throw new Error(`Unknown adapter kind: ${adapterKind}`);
       }
@@ -885,7 +946,7 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
           const adapter = await adapterFromConfig(adapterCfg);
           await adapter.whoami();
 
-          // next prerequisites
+          // workflow-loop selection prerequisites
           await adapter.listBacklogIdsInOrder();
           await adapter.listIdsByStage('stage:todo');
           await adapter.listIdsByStage('stage:blocked');
@@ -912,15 +973,12 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
 
       io.stdout.write(`Wrote ${configPath}\n`);
       io.stdout.write(
-        `Autopilot suggestion: for token-free dispatching, schedule this system cron command every ${autopilotCronExpr}: /root/.openclaw/workspace/skills/kanban-workflow/scripts/dispatcher-cron.sh (runs kanban-workflow cron-dispatch).\n`,
-      );
-      io.stdout.write(
-        `Alternative (legacy): OpenClaw-agent mode can be installed with \`npm run -s kanban-workflow -- cron-dispatch --agent ${WORKER_AGENT_ID}\` in /root/.openclaw/workspace/skills/kanban-workflow.\n`,
+        `Workflow-loop suggestion: for token-free dispatching, schedule this system cron command every ${autopilotCronExpr}: /root/.openclaw/workspace/skills/kanban-workflow/scripts/dispatcher-cron.sh (runs kanban-workflow workflow-loop).\n`,
       );
 
       if (autopilotInstallCron) {
         const tz = autopilotTz ?? '';
-        const message = `Run npm run -s kanban-workflow -- cron-dispatch --agent ${WORKER_AGENT_ID} from /root/.openclaw/workspace/skills/kanban-workflow.`;
+        const message = 'Run npm run -s kanban-workflow -- workflow-loop from /root/.openclaw/workspace/skills/kanban-workflow.';
 
         const args = [
           'cron',
@@ -952,67 +1010,6 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
       return 0;
     }
 
-    if (cmd === 'enforce-runtime') {
-      const openclawJsonPath = '/root/.openclaw/openclaw.json';
-      const baseAgentDir = '/root/.openclaw/agents';
-      const specs = [
-        { id: DISPATCHER_AGENT_ID, name: 'kanban-workflow dispatcher', dir: `${baseAgentDir}/${DISPATCHER_AGENT_ID}/agent` },
-        { id: WORKER_AGENT_ID, name: 'kanban-workflow worker', dir: `${baseAgentDir}/${WORKER_AGENT_ID}/agent` },
-      ];
-
-      // Ensure agent dirs exist with auth profiles copied from autotriage-subagent if available.
-      await fs.mkdir(baseAgentDir, { recursive: true });
-      for (const s of specs) {
-        await fs.mkdir(s.dir, { recursive: true });
-      }
-
-      // Best-effort update openclaw.json agent list entries.
-      try {
-        const raw = await fs.readFile(openclawJsonPath, 'utf8');
-        const cfg = JSON.parse(raw);
-        cfg.agents = cfg.agents || {};
-        cfg.agents.list = Array.isArray(cfg.agents.list) ? cfg.agents.list : [];
-        const ids = new Set(cfg.agents.list.map((x: any) => String(x?.id ?? '')));
-        for (const s of specs) {
-          if (!ids.has(s.id)) {
-            cfg.agents.list.push({ id: s.id, name: s.name, workspace: '/root/.openclaw/workspace', agentDir: s.dir });
-          }
-        }
-        await fs.writeFile(openclawJsonPath, `${JSON.stringify(cfg, null, 2)}
-`, 'utf8');
-      } catch {
-        // no-op: keep command resilient
-      }
-
-      // Ensure cron job routes through dispatcher->worker model.
-      const cronList = await execa('openclaw', ['cron', 'list', '--json']);
-      const parsed = JSON.parse(cronList.stdout || '{}');
-      const jobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
-      const target = jobs.find((j: any) => j?.name === 'kanban-workflow dispatcher');
-      const message = `Run npm run -s kanban-workflow -- cron-dispatch --agent ${WORKER_AGENT_ID} from /root/.openclaw/workspace/skills/kanban-workflow.`;
-
-      if (target?.id) {
-        const args = ['cron', 'edit', String(target.id), '--agent', DISPATCHER_AGENT_ID, '--message', message, '--session', 'isolated'];
-        await execa('openclaw', args);
-      } else {
-        const args = [
-          'cron', 'add',
-          '--name', 'kanban-workflow dispatcher',
-          '--agent', DISPATCHER_AGENT_ID,
-          '--every', '5m',
-          '--session', 'isolated',
-          '--message', message,
-          '--no-deliver',
-          '--json',
-        ];
-        await execa('openclaw', args);
-      }
-
-      io.stdout.write('Runtime enforced: agents + dispatcher cron configured.\n');
-      writeWhatNext(io, cmd);
-      return 0;
-    }
-
     let config: any;
     try {
       config = await loadConfigFromFile({ fs: setupFsCompat(), path: configPath });
@@ -1036,30 +1033,23 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
       return 0;
     }
 
-    if (cmd === 'needs-my-attention') {
-      const support = adapter as NeedsMyAttentionPort;
-      if (typeof support.listNeedsMyAttention !== 'function') {
-        throw new Error('needs-my-attention is currently supported only by the plane adapter');
-      }
-
-      io.stdout.write(`${JSON.stringify(await support.listNeedsMyAttention(), null, 2)}\n`);
-      writeWhatNext(io, cmd);
-      return 0;
-    }
-
-    if (cmd === 'autopilot-tick') {
-      const dryRun = Boolean(flags['dry-run']);
-      const output = await runAutopilotCommand(adapter, dryRun, requeueTargetStage);
-      io.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-      writeWhatNext(io, cmd);
-      return 0;
-    }
-
-    if (cmd === 'cron-dispatch') {
+    if (cmd === 'workflow-loop') {
       const dryRun = Boolean(flags['dry-run']);
       const output = await runAutopilotCommand(adapter, dryRun, requeueTargetStage);
       const previousMap = await loadSessionMap();
       const plan = buildDispatcherPlan({ autopilotOutput: output, previousMap, now: new Date() });
+
+      const activeCarryForward =
+        !dryRun &&
+        output?.tick?.kind === 'in_progress' &&
+        previousMap.active?.ticketId &&
+        previousMap.active.ticketId === plan.activeTicketId;
+
+      if (activeCarryForward) {
+        await saveSessionMap(plan.map);
+        // Poll-only mode while a worker ticket is already active.
+        return 0;
+      }
 
       const execution: Array<{
         sessionId: string;
@@ -1072,20 +1062,46 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
       let noWorkAlert: NoWorkAlertResult | null = null;
 
       const applyWorkerOutput = async (action: { sessionId: string; ticketId: string }, workerOutput: string, detailPrefix?: string): Promise<void> => {
-        const contract = validateWorkerResponseContract(workerOutput);
-        const parsed = contract.command;
+        let report = workerOutput;
+        let facts = extractWorkerReportFacts(report);
 
-        if (!contract.ok || !parsed) {
-          execution.push({
-            sessionId: action.sessionId,
+        if (facts.missing.length > 0) {
+          const retry = await dispatchWorkerTurn({
             ticketId: action.ticketId,
-            parsed,
-            workerOutput,
-            outcome: 'parse_error',
-            detail: contract.violations.join(' '),
+            agentId: WORKER_AGENT_ID,
+            sessionId: action.sessionId,
+            text: buildRetryPrompt(facts.missing),
+            thinking: 'low',
           });
-          return;
+
+          if (retry.kind === 'delegated') {
+            execution.push({
+              sessionId: action.sessionId,
+              ticketId: action.ticketId,
+              parsed: null,
+              workerOutput: retry.notice,
+              outcome: 'delegated_started',
+              detail: 'source=retry-request; ticket_notified=false',
+            });
+            return;
+          }
+
+          report = retry.workerOutput;
+          facts = extractWorkerReportFacts(report);
         }
+
+        let decision = await decideWithAgent({ map: plan.map, ticketId: action.ticketId, report, facts });
+        if (!decision) decision = 'blocked';
+        if (decision === 'continue' && continueCountForTicket(plan.map, action.ticketId) >= 2) {
+          decision = 'blocked';
+        }
+
+        const parsed: WorkerTerminalCommand =
+          decision === 'continue'
+            ? { kind: 'continue', text: summarizeReportForComment(report) }
+            : decision === 'blocked'
+              ? { kind: 'blocked', text: summarizeReportForComment(report) }
+              : { kind: 'completed', result: summarizeReportForComment(report) };
 
         try {
           if (parsed.kind === 'continue') {
@@ -1097,12 +1113,12 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
           }
 
           applyWorkerCommandToSessionMap(plan.map, action.ticketId, parsed, new Date());
-          const evidence = `evidence.present=${String(contract.evidence.present)} evidence.concrete=${String(contract.evidence.hasConcreteExecution)}`;
+          const evidence = `report.missing=${facts.missing.length}`;
           execution.push({
             sessionId: action.sessionId,
             ticketId: action.ticketId,
             parsed,
-            workerOutput,
+            workerOutput: report,
             outcome: 'applied',
             detail: detailPrefix ? `${detailPrefix}; ${evidence}` : evidence,
           });
@@ -1111,7 +1127,7 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
             sessionId: action.sessionId,
             ticketId: action.ticketId,
             parsed,
-            workerOutput,
+            workerOutput: report,
             outcome: 'mutation_error',
             detail: err?.message ?? String(err),
           });
@@ -1121,8 +1137,8 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
 
       if (!dryRun) {
         for (const action of plan.actions) {
-          const effectiveAgent = String(flags.agent ?? WORKER_AGENT_ID);
-          const effectiveThinking = String(flags.thinking ?? 'high');
+          const effectiveAgent = WORKER_AGENT_ID;
+          const effectiveThinking = 'high';
 
           if (action.kind === 'work') {
             const delegationState = await loadWorkerDelegationState(action.sessionId, action.ticketId);
@@ -1208,48 +1224,13 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
       return 0;
     }
 
-    if (cmd === 'next') {
-      io.stdout.write(`${JSON.stringify(await next(adapter), null, 2)}\n`);
-      writeWhatNext(io, cmd);
-      return 0;
-    }
-
-
-    if (cmd === 'continue') {
-      const id = String(flags.id ?? '').trim() || (await loadCurrentAutopilotId()) || '';
-      const text = String(flags.text ?? '').trim();
-      if (!id) throw new Error('continue requires active ticket context (run autopilot-tick first)');
-      if (!text) throw new Error('continue requires --text');
-      await update(adapter, id, text);
-      writeWhatNext(io, cmd);
-      return 0;
-    }
-
-    if (cmd === 'blocked') {
-      const id = String(flags.id ?? '').trim() || (await loadCurrentAutopilotId()) || '';
-      const text = String(flags.text ?? '').trim();
-      if (!id) throw new Error('blocked requires active ticket context (run autopilot-tick first)');
-      if (!text) throw new Error('blocked requires --text');
-      await ask(adapter, id, text);
-      writeWhatNext(io, cmd);
-      return 0;
-    }
-
-    if (cmd === 'completed') {
-      const id = String(flags.id ?? '').trim() || (await loadCurrentAutopilotId()) || '';
-      const result = String(flags.result ?? '').trim();
-      if (!id) throw new Error('completed requires active ticket context (run autopilot-tick first)');
-      if (!result) throw new Error('completed requires --result');
-      await complete(adapter, id, result);
-      writeWhatNext(io, cmd);
-      return 0;
-    }
-
     if (cmd === 'create') {
+      const projectId = String(flags['project-id'] ?? '').trim();
       const title = String(flags.title ?? '');
       const body = String(flags.body ?? '');
+      if (!projectId) throw new Error('create requires --project-id');
       if (!title) throw new Error('create requires --title');
-      io.stdout.write(`${JSON.stringify(await create(adapter, { title, body }), null, 2)}\n`);
+      io.stdout.write(`${JSON.stringify(await create(adapter, { projectId, title, body }), null, 2)}\n`);
       writeWhatNext(io, cmd);
       return 0;
     }
@@ -1264,15 +1245,6 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
 
 async function adapterFromConfig(cfg: any): Promise<any> {
   switch (cfg.kind) {
-    case 'github':
-      return new GitHubAdapter({
-        repo: cfg.repo,
-        snapshotPath: 'data/github_snapshot.json',
-        project: cfg.project,
-        stageMap: cfg.stageMap,
-      });
-    case 'linear':
-      return new LinearAdapter({ viewId: cfg.viewId, teamId: cfg.teamId, projectId: cfg.projectId, stageMap: cfg.stageMap });
     case 'plane':
       return new PlaneAdapter({
         workspaceSlug: cfg.workspaceSlug,
@@ -1281,10 +1253,8 @@ async function adapterFromConfig(cfg: any): Promise<any> {
         orderField: cfg.orderField,
         stageMap: cfg.stageMap,
       });
-    case 'planka':
-      return new PlankaAdapter({ stageMap: cfg.stageMap, boardId: cfg.boardId, backlogListId: cfg.backlogListId, bin: cfg.bin });
     default:
-      throw new Error(`Unknown adapter kind: ${cfg.kind}`);
+      throw new Error(`Unknown adapter kind (only plane supported): ${cfg.kind}`);
   }
 }
 
