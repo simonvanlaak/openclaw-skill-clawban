@@ -8,6 +8,8 @@ export * from './adapters/index.js';
 
 export * from './automation/auto_reopen.js';
 export * from './automation/worker_contract.js';
+export * from './workflow/agent_io.js';
+export * from './workflow/decision_policy.js';
 
 export * from './config.js';
 export * from './setup.js';

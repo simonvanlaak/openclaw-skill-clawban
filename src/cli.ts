@@ -16,6 +16,16 @@ import {
   type SessionMap,
 } from './automation/session_dispatcher.js';
 import { extractWorkerTerminalCommand, type WorkerTerminalCommand } from './automation/worker_contract.js';
+import { parseWorkerOutputFromAgentCall } from './workflow/agent_io.js';
+import {
+  coerceDecisionChoice,
+  extractWorkerReportFacts,
+  parseDecisionChoice,
+  shouldQuietPollAfterCarryForward,
+  summarizeReportForComment,
+  type DecisionChoice,
+  type WorkerReportFacts,
+} from './workflow/decision_policy.js';
 import { StageKeySchema } from './stage.js';
 import { ask, complete, create, show, start, update } from './verbs/verbs.js';
 
@@ -229,12 +239,6 @@ type WorkerDelegationState =
   | { kind: 'running'; meta: WorkerDelegationMeta }
   | { kind: 'completed'; meta: WorkerDelegationMeta; workerOutput: string; raw: string };
 
-type AgentCallParsed = {
-  workerOutput: string;
-  raw: string;
-  stderr: string;
-};
-
 function resolvePositiveTimeoutMs(raw: string | undefined, fallback: number): number {
   const n = Number(raw ?? '');
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
@@ -291,26 +295,6 @@ async function fileExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function parseWorkerOutputFromAgentCall(stdoutRaw: unknown, stderrRaw: unknown): AgentCallParsed {
-  const raw = String(stdoutRaw ?? '').trim();
-  const stderr = String(stderrRaw ?? '').trim();
-  let workerOutput = raw;
-
-  try {
-    const parsed = JSON.parse(raw);
-    const payloads: any[] = Array.isArray(parsed?.result?.payloads) ? parsed.result.payloads : [];
-    const asText = payloads
-      .map((p) => (typeof p?.text === 'string' ? p.text : ''))
-      .filter((x) => x.trim().length > 0)
-      .join('\n');
-    if (asText.trim()) workerOutput = asText;
-  } catch {
-    // fallback to raw stdout
-  }
-
-  return { workerOutput: workerOutput.trim(), raw, stderr };
 }
 
 function collectErrText(err: unknown): string {
@@ -552,65 +536,6 @@ type NoWorkAlertResult = {
   detail?: string;
 };
 
-type WorkerReportFacts = {
-  hasVerification: boolean;
-  hasBlockers: boolean;
-  hasResolvedBlockers: boolean;
-  hasUncertainties: boolean;
-  hasConfidence: boolean;
-  missing: string[];
-};
-
-type DecisionChoice = 'continue' | 'blocked' | 'completed';
-
-function extractWorkerReportFacts(report: string): WorkerReportFacts {
-  const text = String(report ?? '');
-  const lower = text.toLowerCase();
-
-  const hasVerification = /\bverification\b/.test(lower) || /\bverified\b/.test(lower) || /\btests?\b/.test(lower) || /\bvalidation\b/.test(lower);
-  const hasBlockerSignal = /\bblocker(s)?\b/.test(lower) || /\bblocked\b/.test(lower) || /\bdependency\b/.test(lower);
-  const hasOpenBlockers = hasBlockerSignal && /\bopen\b/.test(lower);
-  const hasResolvedBlockers = hasBlockerSignal && /\bresolved\b/.test(lower);
-  const hasBlockers = hasOpenBlockers || hasResolvedBlockers;
-  const hasUncertainties = /\buncertaint(y|ies)\b/.test(lower) || /\buncertain\b/.test(lower) || /\brisk(s)?\b/.test(lower) || /\bquestion(s)?\b/.test(lower);
-  const hasConfidence = /\bconfidence\b/.test(lower) && /\b(0(\.\d+)?|1(\.0+)?)\b/.test(lower);
-
-  const missing: string[] = [];
-  if (!hasVerification) missing.push('verification evidence');
-  if (!hasBlockers) missing.push('blockers with open/resolved status');
-  if (!hasUncertainties) missing.push('uncertainties');
-  if (!hasConfidence) missing.push('confidence (0.0..1.0)');
-
-  return { hasVerification, hasBlockers, hasResolvedBlockers, hasUncertainties, hasConfidence, missing };
-}
-
-function parseDecisionChoice(raw: string): DecisionChoice | null {
-  const text = String(raw ?? '').trim().toLowerCase();
-  if (!text) return null;
-  if (/\bcompleted\b/.test(text)) return 'completed';
-  if (/\bblocked\b/.test(text)) return 'blocked';
-  if (/\bcontinue\b/.test(text)) return 'continue';
-  return null;
-}
-
-function coerceDecisionChoice(input: {
-  decision: DecisionChoice | null;
-  facts: WorkerReportFacts;
-  continueCount: number;
-}): DecisionChoice {
-  let decision: DecisionChoice = input.decision ?? 'blocked';
-  if (input.facts.missing.length > 0 && decision !== 'blocked') {
-    decision = 'blocked';
-  }
-  if (decision === 'completed' && !(input.facts.hasVerification && input.facts.hasResolvedBlockers)) {
-    decision = 'blocked';
-  }
-  if (decision === 'continue' && input.continueCount >= 2) {
-    decision = 'blocked';
-  }
-  return decision;
-}
-
 function continueCountForTicket(map: SessionMap, ticketId: string): number {
   const entry = (map.sessionsByTicket ?? {})[ticketId] as any;
   const n = Number(entry?.continueCount ?? 0);
@@ -623,12 +548,6 @@ function buildRetryPrompt(missing: string[]): string {
     `Missing items: ${missing.join(', ')}`,
     'Reply with markdown report only and include the missing items.',
   ].join('\n');
-}
-
-function summarizeReportForComment(report: string, maxChars = 1200): string {
-  const compact = String(report ?? '').trim().replace(/\s+/g, ' ');
-  if (!compact) return 'No report details provided.';
-  return compact.length > maxChars ? `${compact.slice(0, maxChars).trimEnd()}...` : compact;
 }
 
 async function decideWithAgent(params: {
@@ -1015,11 +934,12 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
       archiveStaleBlockedWorkerSessions(previousMap, new Date(), 7);
       const plan = buildWorkflowLoopPlan({ autopilotOutput: output, previousMap, now: new Date() });
 
-      const activeCarryForward =
+      const activeCarryForward = Boolean(
         !dryRun &&
-        output?.tick?.kind === 'in_progress' &&
-        previousMap.active?.ticketId &&
-        previousMap.active.ticketId === plan.activeTicketId;
+          output?.tick?.kind === 'in_progress' &&
+          previousMap.active?.ticketId &&
+          previousMap.active.ticketId === plan.activeTicketId,
+      );
 
       const execution: Array<{
         sessionId: string;
@@ -1173,7 +1093,12 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
 
         await saveSessionMap(plan.map);
 
-        if (activeCarryForward && execution.length > 0 && execution.every((x) => x.outcome === 'delegated_running')) {
+        if (
+          shouldQuietPollAfterCarryForward({
+            activeCarryForward,
+            executionOutcomes: execution.map((x) => x.outcome),
+          })
+        ) {
           // Quiet poll when active ticket has no new completed worker output.
           return 0;
         }
