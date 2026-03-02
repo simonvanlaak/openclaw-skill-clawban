@@ -550,6 +550,7 @@ type NoWorkAlertResult = {
 type WorkerReportFacts = {
   hasVerification: boolean;
   hasBlockers: boolean;
+  hasResolvedBlockers: boolean;
   hasUncertainties: boolean;
   hasConfidence: boolean;
   missing: string[];
@@ -562,7 +563,10 @@ function extractWorkerReportFacts(report: string): WorkerReportFacts {
   const lower = text.toLowerCase();
 
   const hasVerification = /\bverification\b/.test(lower) || /\bverified\b/.test(lower) || /\btests?\b/.test(lower) || /\bvalidation\b/.test(lower);
-  const hasBlockers = (/\bblocker(s)?\b/.test(lower) || /\bblocked\b/.test(lower) || /\bdependency\b/.test(lower)) && (/\bopen\b/.test(lower) || /\bresolved\b/.test(lower));
+  const hasBlockerSignal = /\bblocker(s)?\b/.test(lower) || /\bblocked\b/.test(lower) || /\bdependency\b/.test(lower);
+  const hasOpenBlockers = hasBlockerSignal && /\bopen\b/.test(lower);
+  const hasResolvedBlockers = hasBlockerSignal && /\bresolved\b/.test(lower);
+  const hasBlockers = hasOpenBlockers || hasResolvedBlockers;
   const hasUncertainties = /\buncertaint(y|ies)\b/.test(lower) || /\buncertain\b/.test(lower) || /\brisk(s)?\b/.test(lower) || /\bquestion(s)?\b/.test(lower);
   const hasConfidence = /\bconfidence\b/.test(lower) && /\b(0(\.\d+)?|1(\.0+)?)\b/.test(lower);
 
@@ -572,7 +576,7 @@ function extractWorkerReportFacts(report: string): WorkerReportFacts {
   if (!hasUncertainties) missing.push('uncertainties');
   if (!hasConfidence) missing.push('confidence (0.0..1.0)');
 
-  return { hasVerification, hasBlockers, hasUncertainties, hasConfidence, missing };
+  return { hasVerification, hasBlockers, hasResolvedBlockers, hasUncertainties, hasConfidence, missing };
 }
 
 function parseDecisionChoice(raw: string): DecisionChoice | null {
@@ -1034,6 +1038,12 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
 
         let decision = await decideWithAgent({ map: plan.map, ticketId: action.ticketId, report, facts });
         if (!decision) decision = 'blocked';
+        if (facts.missing.length > 0 && decision !== 'blocked') {
+          decision = 'blocked';
+        }
+        if (decision === 'completed' && !(facts.hasVerification && facts.hasResolvedBlockers)) {
+          decision = 'blocked';
+        }
         if (decision === 'continue' && continueCountForTicket(plan.map, action.ticketId) >= 2) {
           decision = 'blocked';
         }

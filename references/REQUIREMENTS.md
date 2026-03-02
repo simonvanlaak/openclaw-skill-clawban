@@ -131,7 +131,7 @@ Identity gating:
 - Only tickets assigned to the authenticated worker (`whoami`) are actionable.
 
 Worker execution model:
-- Workflow-loop starts worker runs via OpenClaw subagent session spawn (`sessions_spawn`).
+- Workflow-loop starts worker runs via local OpenClaw agent CLI calls (`openclaw agent`) using explicit `--agent` and per-ticket `--session-id`.
 - Worker executes in isolated session and produces a final Markdown work report.
 - Workflow-loop consumes worker result (announce payload and/or transcript), evaluates forced-choice policy, then performs exactly one mutation action.
 - Worker sessions are per-ticket and persistent across ticket pauses/requeues (e.g., blocked -> unblocked resume) so prior ticket-specific context is preserved.
@@ -194,9 +194,11 @@ Action:
 - Workflow-loop retry prompt should include missing-items guidance only (no full prior-report echo required).
 - No separate per-run decision artifact file is required; decision context is retained in workflow-loop session history.
 - On failed retry fallback, workflow-loop immediately applies `blocked` when decision output is missing/invalid/ambiguous.
+- If required decision signals remain missing after retry (verification, blockers status, uncertainties, confidence), workflow-loop must coerce any non-`blocked` decision to `blocked`.
 - Per ticket, `continue` is hard-limited to 2 decisions.
 - After 2 `continue` decisions for the same ticket, workflow-loop must only allow `blocked` or `completed`.
 - If decision agent selects `continue` after the cap is reached, workflow-loop must coerce decision to `blocked`.
+- `completed` must be coerced to `blocked` unless verification evidence is present and blockers are explicitly resolved.
 
 ## 7) Scope exclusions
 
