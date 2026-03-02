@@ -1,5 +1,4 @@
 import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { execa } from 'execa';
@@ -13,19 +12,29 @@ import {
   buildWorkflowLoopPlan,
   loadSessionMap,
   saveSessionMap,
-  type SessionMap,
 } from './automation/session_dispatcher.js';
 import type { WorkerTerminalCommand } from './automation/worker_contract.js';
-import { parseWorkerOutputFromAgentCall } from './workflow/agent_io.js';
+import { decideWithAgent } from './workflow/decision_agent.js';
 import {
   coerceDecisionChoice,
   extractWorkerReportFacts,
-  parseDecisionChoice,
   shouldQuietPollAfterCarryForward,
   summarizeReportForComment,
-  type DecisionChoice,
-  type WorkerReportFacts,
 } from './workflow/decision_policy.js';
+import {
+  maybeSendNoWorkFirstHitAlert,
+  type NoWorkAlertResult,
+} from './workflow/no_work_alert.js';
+import {
+  archiveStaleBlockedWorkerSessions,
+  buildRetryPrompt,
+  continueCountForTicket,
+} from './workflow/ticket_runtime.js';
+import {
+  dispatchWorkerTurn,
+  loadWorkerDelegationState,
+  type WorkerRuntimeOptions,
+} from './workflow/worker_runtime.js';
 import { StageKeySchema } from './stage.js';
 import { ask, complete, create, show, start, update } from './verbs/verbs.js';
 
@@ -88,8 +97,6 @@ function writeHelp(io: CliIo): void {
 const PLANE_ENV_HELPER = '/root/.openclaw/workspace/scripts/plane_env.sh';
 const WORKFLOW_LOOP_AGENT_ID = 'kanban-workflow-workflow-loop';
 const WORKER_AGENT_ID = 'kanban-workflow-worker';
-const DEFAULT_NO_WORK_ALERT_CHANNEL = 'rocketchat';
-const DEFAULT_NO_WORK_ALERT_TARGET = '@simon.vanlaak';
 const WORKER_DELEGATION_DIR = '.tmp/kwf-worker-delegations';
 const DEFAULT_WORKER_SYNC_TIMEOUT_MS = 30_000;
 const DEFAULT_WORKER_BACKGROUND_TIMEOUT_MS = 15 * 60_000;
@@ -104,6 +111,13 @@ function isBackgroundWorkerDelegationAllowed(agentId: string): boolean {
   // Default: disabled. (If we ever need it for other agents, add an explicit allowlist.)
   return false;
 }
+
+const WORKER_RUNTIME_OPTIONS: WorkerRuntimeOptions = {
+  delegationDir: WORKER_DELEGATION_DIR,
+  defaultSyncTimeoutMs: DEFAULT_WORKER_SYNC_TIMEOUT_MS,
+  defaultBackgroundTimeoutMs: DEFAULT_WORKER_BACKGROUND_TIMEOUT_MS,
+  isBackgroundDelegationAllowed: isBackgroundWorkerDelegationAllowed,
+};
 
 async function ensurePlaneEnvFromHelper(): Promise<void> {
   if ((process.env.PLANE_API_KEY ?? '').trim()) return;
@@ -217,502 +231,6 @@ function parseArgs(argv: string[]): { cmd: string; flags: Record<string, string 
   }
 
   return { cmd, flags };
-}
-
-type DispatchWorkerTurnResult =
-  | { kind: 'immediate'; workerOutput: string; raw: string }
-  | { kind: 'delegated'; notice: string };
-
-type WorkerDelegationMeta = {
-  ticketId: string;
-  dispatchRunId: string;
-  sessionId: string;
-  agentId: string;
-  thinking: string;
-  startedAt: string;
-  syncTimeoutMs: number;
-  backgroundTimeoutMs: number;
-};
-
-type WorkerDelegationState =
-  | { kind: 'none' }
-  | { kind: 'running'; meta: WorkerDelegationMeta }
-  | { kind: 'completed'; meta: WorkerDelegationMeta; workerOutput: string; raw: string };
-
-function resolvePositiveTimeoutMs(raw: string | undefined, fallback: number): number {
-  const n = Number(raw ?? '');
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
-
-function timeoutMsToSeconds(timeoutMs: number): number {
-  return Math.max(1, Math.ceil(timeoutMs / 1000));
-}
-
-function withDispatchMetadataEnvelope(params: {
-  ticketId: string;
-  dispatchRunId: string;
-  text: string;
-}): string {
-  return [
-    'DISPATCH_METADATA',
-    `ticketId: ${params.ticketId}`,
-    `dispatchRunId: ${params.dispatchRunId}`,
-    '',
-    params.text,
-  ].join('\n');
-}
-
-function workerDelegationPaths(sessionId: string): {
-  dir: string;
-  messagePath: string;
-  resultPath: string;
-  stderrPath: string;
-  exitCodePath: string;
-  donePath: string;
-  metaPath: string;
-} {
-  const safeSession = sessionId.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 120) || 'session';
-  const dir = path.join(WORKER_DELEGATION_DIR, safeSession);
-  return {
-    dir,
-    messagePath: path.join(dir, 'message.txt'),
-    resultPath: path.join(dir, 'result.json'),
-    stderrPath: path.join(dir, 'stderr.log'),
-    exitCodePath: path.join(dir, 'exit.code'),
-    donePath: path.join(dir, 'done'),
-    metaPath: path.join(dir, 'meta.json'),
-  };
-}
-
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function collectErrText(err: unknown): string {
-  if (!err || typeof err !== 'object') return String(err ?? '');
-  const e = err as Record<string, unknown>;
-  return [e.message, e.shortMessage, e.stderr, e.stdout, e.all]
-    .map((v) => String(v ?? ''))
-    .join('\n');
-}
-
-function hasTimedOutFallbackMessage(text: string): boolean {
-  const lower = text.toLowerCase();
-  return lower.includes('request timed out before a response was generated') || lower.includes('llm request timed out');
-}
-
-function isRequestTimeoutErr(err: unknown): boolean {
-  const text = collectErrText(err).toLowerCase();
-  return text.includes('request timed out') || text.includes('llm request timed out') || text.includes('timeout');
-}
-
-function buildDelegationNotice(params: { ticketId: string; text: string; syncTimeoutMs: number; sessionId: string }): string {
-  const seconds = Math.max(1, Math.round(params.syncTimeoutMs / 1000));
-  const rawText = params.text.trim();
-  const compactText = rawText.length > 1800 ? `${rawText.slice(0, 1800).trimEnd()}...` : rawText;
-
-  return [
-    `No final worker response after ${seconds}s for ticket ${params.ticketId}. Re-dispatching this ticket in background with full context to continue execution.`,
-    '',
-    'RESUME_CONTEXT',
-    `sessionId: ${params.sessionId}`,
-    compactText,
-  ].join('\n');
-}
-
-async function startWorkerDelegation(params: {
-  ticketId: string;
-  dispatchRunId: string;
-  agentId: string;
-  sessionId: string;
-  text: string;
-  thinking: string;
-  syncTimeoutMs: number;
-}): Promise<void> {
-  const message = withDispatchMetadataEnvelope({
-    ticketId: params.ticketId,
-    dispatchRunId: params.dispatchRunId,
-    text: params.text,
-  });
-
-  const backgroundTimeoutMs = resolvePositiveTimeoutMs(
-    process.env.KWF_WORKER_BACKGROUND_TIMEOUT_MS,
-    DEFAULT_WORKER_BACKGROUND_TIMEOUT_MS,
-  );
-
-  const paths = workerDelegationPaths(params.sessionId);
-  const meta: WorkerDelegationMeta = {
-    ticketId: params.ticketId,
-    dispatchRunId: params.dispatchRunId,
-    sessionId: params.sessionId,
-    agentId: params.agentId,
-    thinking: params.thinking,
-    startedAt: new Date().toISOString(),
-    syncTimeoutMs: params.syncTimeoutMs,
-    backgroundTimeoutMs,
-  };
-
-  await fs.mkdir(paths.dir, { recursive: true });
-  await Promise.all([
-    fs.writeFile(paths.messagePath, message, 'utf8'),
-    fs.writeFile(paths.metaPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8'),
-  ]);
-
-  const timeoutSeconds = timeoutMsToSeconds(backgroundTimeoutMs);
-  const script = [
-    'set +e',
-    `openclaw agent --agent ${shellQuote(params.agentId)} --session-id ${shellQuote(params.sessionId)} --thinking ${shellQuote(params.thinking)} --timeout ${timeoutSeconds} --message "$(cat ${shellQuote(paths.messagePath)})" --json > ${shellQuote(paths.resultPath)} 2> ${shellQuote(paths.stderrPath)}`,
-    'status=$?',
-    `printf "%s\\n" "$status" > ${shellQuote(paths.exitCodePath)}`,
-    `touch ${shellQuote(paths.donePath)}`,
-  ].join('\n');
-
-  const detached: any = execa('bash', ['-lc', script], { detached: true, stdio: 'ignore' } as any);
-  if (typeof detached?.unref === 'function') detached.unref();
-  if (typeof detached?.catch === 'function') {
-    detached.catch(() => undefined);
-  }
-}
-
-async function clearWorkerDelegation(sessionId: string): Promise<void> {
-  const paths = workerDelegationPaths(sessionId);
-  await fs.rm(paths.dir, { recursive: true, force: true });
-}
-
-async function loadWorkerDelegationState(sessionId: string, ticketId: string): Promise<WorkerDelegationState> {
-  const paths = workerDelegationPaths(sessionId);
-  if (!(await fileExists(paths.metaPath))) return { kind: 'none' };
-
-  let meta: WorkerDelegationMeta;
-  try {
-    meta = JSON.parse(await fs.readFile(paths.metaPath, 'utf8')) as WorkerDelegationMeta;
-  } catch {
-    await clearWorkerDelegation(sessionId);
-    return { kind: 'none' };
-  }
-
-  if (meta.ticketId !== ticketId) {
-    await clearWorkerDelegation(sessionId);
-    return { kind: 'none' };
-  }
-
-  if (!(await fileExists(paths.donePath))) {
-    // Self-heal: if the background delegation never produced a done marker,
-    // avoid getting stuck in a permanent "delegated_running" state.
-    const startedAtMs = Date.parse(meta.startedAt);
-    const graceMs = 60_000;
-    if (!Number.isFinite(startedAtMs)) {
-      await clearWorkerDelegation(sessionId);
-      return { kind: 'none' };
-    }
-
-    const deadlineMs = startedAtMs + meta.backgroundTimeoutMs + graceMs;
-    if (Date.now() > deadlineMs) {
-      await clearWorkerDelegation(sessionId);
-      return { kind: 'none' };
-    }
-
-    return { kind: 'running', meta };
-  }
-
-  const stdoutRaw = await fs.readFile(paths.resultPath, 'utf8').catch(() => '');
-  const stderrRaw = await fs.readFile(paths.stderrPath, 'utf8').catch(() => '');
-  const parsed = parseWorkerOutputFromAgentCall(stdoutRaw, stderrRaw);
-  await clearWorkerDelegation(sessionId);
-
-  if (!parsed.ok) {
-    throw new Error(`Background worker turn failed for ticket ${ticketId}: ${parsed.error ?? 'unknown error'}`);
-  }
-
-  return {
-    kind: 'completed',
-    meta,
-    workerOutput: parsed.workerOutput,
-    raw: parsed.raw,
-  };
-}
-
-async function dispatchWorkerTurn(params: {
-  ticketId: string;
-  dispatchRunId: string;
-  agentId: string;
-  sessionId: string;
-  text: string;
-  thinking: string;
-}): Promise<DispatchWorkerTurnResult> {
-  const message = withDispatchMetadataEnvelope({
-    ticketId: params.ticketId,
-    dispatchRunId: params.dispatchRunId,
-    text: params.text,
-  });
-
-  const syncTimeoutMs = resolvePositiveTimeoutMs(process.env.KWF_WORKER_SYNC_TIMEOUT_MS, DEFAULT_WORKER_SYNC_TIMEOUT_MS);
-  const allowBackgroundDelegation = isBackgroundWorkerDelegationAllowed(params.agentId);
-  const timeoutSeconds = timeoutMsToSeconds(syncTimeoutMs);
-
-  try {
-    const run = await execa('openclaw', [
-      'agent',
-      '--agent',
-      params.agentId,
-      '--session-id',
-      params.sessionId,
-      '--thinking',
-      params.thinking,
-      '--timeout',
-      String(timeoutSeconds),
-      '--message',
-      message,
-      '--json',
-    ]);
-
-    const parsed = parseWorkerOutputFromAgentCall(run.stdout, run.stderr);
-    if (!parsed.ok) {
-      throw new Error(`Worker turn failed for ticket ${params.ticketId}: ${parsed.error ?? 'unknown error'}`);
-    }
-    if (hasTimedOutFallbackMessage(parsed.workerOutput) || hasTimedOutFallbackMessage(parsed.raw)) {
-      if (!allowBackgroundDelegation) {
-        throw new Error(`Worker turn timed out for ticket ${params.ticketId}`);
-      }
-
-      await startWorkerDelegation({
-        ticketId: params.ticketId,
-        dispatchRunId: params.dispatchRunId,
-        agentId: params.agentId,
-        sessionId: params.sessionId,
-        text: params.text,
-        thinking: params.thinking,
-        syncTimeoutMs,
-      });
-      return {
-        kind: 'delegated',
-        notice: buildDelegationNotice({
-          ticketId: params.ticketId,
-          text: params.text,
-          syncTimeoutMs,
-          sessionId: params.sessionId,
-        }),
-      };
-    }
-
-    return { kind: 'immediate', workerOutput: parsed.workerOutput, raw: parsed.raw };
-  } catch (err) {
-    if (!isRequestTimeoutErr(err)) throw err;
-
-    if (!allowBackgroundDelegation) {
-      throw new Error(`Worker turn timed out for ticket ${params.ticketId}`);
-    }
-
-    await startWorkerDelegation({
-      ticketId: params.ticketId,
-      dispatchRunId: params.dispatchRunId,
-      agentId: params.agentId,
-      sessionId: params.sessionId,
-      text: params.text,
-      thinking: params.thinking,
-      syncTimeoutMs,
-    });
-
-    return {
-      kind: 'delegated',
-      notice: buildDelegationNotice({
-        ticketId: params.ticketId,
-        text: params.text,
-        syncTimeoutMs,
-        sessionId: params.sessionId,
-      }),
-    };
-  }
-}
-
-type NoWorkAlertResult = {
-  outcome: 'first_hit_sent' | 'first_hit_skipped' | 'repeat_suppressed' | 'send_error';
-  channel?: string;
-  target?: string;
-  message?: string;
-  reasonCode?: string;
-  detail?: string;
-};
-
-function continueCountForTicket(map: SessionMap, ticketId: string): number {
-  const entry = (map.sessionsByTicket ?? {})[ticketId] as any;
-  const n = Number(entry?.continueCount ?? 0);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
-}
-
-function buildRetryPrompt(missing: string[]): string {
-  return [
-    'Your previous report is missing required elements.',
-    `Missing items: ${missing.join(', ')}`,
-    'Reply with markdown report only and include the missing items.',
-  ].join('\n');
-}
-
-async function decideWithAgent(params: {
-  map: SessionMap;
-  ticketId: string;
-  report: string;
-  facts: WorkerReportFacts;
-}): Promise<DecisionChoice | null> {
-  const mapAny = params.map as any;
-  const decisionAgentId = (process.env.KWF_DECISION_AGENT_ID ?? 'kanban-workflow-decision').trim() || 'kanban-workflow-decision';
-  const maxTicketsPerSession = 5;
-  const maxContextTokens = resolvePositiveTimeoutMs(process.env.KWF_DECISION_CONTEXT_TOKENS, 272_000);
-  const charsPerToken = 4;
-  const maxChars = maxContextTokens * charsPerToken;
-  const rotateAt = 0.5;
-
-  const state = (mapAny.decisionSession ??= {
-    sessionId: randomUUID(),
-    ticketsUsedCount: 0,
-    contextChars: 0,
-  });
-
-  const usageRatio = (state.contextChars ?? 0) / maxChars;
-  if ((state.ticketsUsedCount ?? 0) >= maxTicketsPerSession || usageRatio >= rotateAt) {
-    state.sessionId = randomUUID();
-    state.ticketsUsedCount = 0;
-    state.contextChars = 0;
-  }
-
-  const prompt = [
-    'Decide exactly one workflow outcome for this ticket.',
-    'Allowed labels: continue, blocked, completed.',
-    'Respond with one word only.',
-    `Ticket: ${params.ticketId}`,
-    `Missing required report fields: ${params.facts.missing.length > 0 ? params.facts.missing.join(', ') : 'none'}`,
-    '',
-    'WORKER_REPORT',
-    params.report,
-  ].join('\n');
-
-  try {
-    const run = await execa('openclaw', [
-      'agent',
-      '--agent',
-      decisionAgentId,
-      '--session-id',
-      state.sessionId,
-      '--thinking',
-      'low',
-      '--timeout',
-      '30',
-      '--message',
-      prompt,
-      '--json',
-    ]);
-
-    const parsed = parseWorkerOutputFromAgentCall(run.stdout, run.stderr);
-    if (!parsed.ok) return null;
-    state.ticketsUsedCount = Number(state.ticketsUsedCount ?? 0) + 1;
-    state.contextChars = Number(state.contextChars ?? 0) + prompt.length + parsed.workerOutput.length;
-
-    return parseDecisionChoice(parsed.workerOutput);
-  } catch {
-    return null;
-  }
-}
-
-function noWorkTickFromOutput(output: any): { kind?: string; reasonCode?: string } {
-  const tick = output?.tick ?? output;
-  if (!tick || typeof tick !== 'object') return {};
-  return {
-    kind: typeof tick.kind === 'string' ? tick.kind : undefined,
-    reasonCode: typeof tick.reasonCode === 'string' ? tick.reasonCode : undefined,
-  };
-}
-
-function buildNoWorkFirstHitAlertMessage(reasonCode?: string): string {
-  const reasonSuffix = reasonCode ? ` (reason: ${reasonCode})` : '';
-  return `Kanban workflow-loop first no-work hit: there is no actionable ticket right now${reasonSuffix}. I will stay idle until a new ticket becomes actionable.`;
-}
-
-function archiveStaleBlockedWorkerSessions(map: SessionMap, now: Date, inactivityDays = 7): void {
-  const cutoffMs = now.getTime() - inactivityDays * 24 * 60 * 60 * 1000;
-  for (const [ticketId, entry] of Object.entries(map.sessionsByTicket ?? {})) {
-    if (entry?.lastState !== 'blocked') continue;
-    const lastSeenMs = Date.parse(String(entry.lastSeenAt ?? ''));
-    if (!Number.isFinite(lastSeenMs)) continue;
-    if (lastSeenMs > cutoffMs) continue;
-    delete map.sessionsByTicket[ticketId];
-    if (map.active?.ticketId === ticketId) {
-      map.active = undefined;
-    }
-  }
-}
-
-async function maybeSendNoWorkFirstHitAlert(params: {
-  output: any;
-  previousMap: SessionMap;
-  map: SessionMap;
-  dryRun: boolean;
-}): Promise<NoWorkAlertResult | null> {
-  const tick = noWorkTickFromOutput(params.output);
-  if (tick.kind !== 'no_work') return null;
-
-  const hasExistingNoWorkStreak = Boolean(params.previousMap.noWork);
-  const alreadyAlertedInStreak = Boolean(params.previousMap.noWork?.firstHitAlertSentAt);
-  if (hasExistingNoWorkStreak && alreadyAlertedInStreak) {
-    return { outcome: 'repeat_suppressed', reasonCode: tick.reasonCode };
-  }
-
-  if (params.dryRun) {
-    return { outcome: 'first_hit_skipped', reasonCode: tick.reasonCode, detail: 'dry_run' };
-  }
-
-  const channel = (process.env.KWF_NO_WORK_ALERT_CHANNEL ?? DEFAULT_NO_WORK_ALERT_CHANNEL).trim() || DEFAULT_NO_WORK_ALERT_CHANNEL;
-  const target = (process.env.KWF_NO_WORK_ALERT_TARGET ?? DEFAULT_NO_WORK_ALERT_TARGET).trim();
-  if (!target) {
-    return { outcome: 'first_hit_skipped', channel, reasonCode: tick.reasonCode, detail: 'missing_target' };
-  }
-
-  const message = buildNoWorkFirstHitAlertMessage(tick.reasonCode);
-
-  try {
-    await execa('openclaw', [
-      'message',
-      'send',
-      '--channel',
-      channel,
-      '--target',
-      target,
-      '--message',
-      message,
-      '--json',
-    ]);
-
-    if (params.map.noWork) {
-      params.map.noWork.firstHitAlertSentAt = new Date().toISOString();
-      params.map.noWork.firstHitAlertChannel = channel;
-      params.map.noWork.firstHitAlertTarget = target;
-    }
-
-    return {
-      outcome: 'first_hit_sent',
-      channel,
-      target,
-      message,
-      reasonCode: tick.reasonCode,
-    };
-  } catch (err: any) {
-    return {
-      outcome: 'send_error',
-      channel,
-      target,
-      message,
-      reasonCode: tick.reasonCode,
-      detail: err?.message ?? String(err),
-    };
-  }
 }
 
 export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.stdout, stderr: process.stderr }): Promise<number> {
@@ -971,7 +489,7 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
             sessionId: action.sessionId,
             text: buildRetryPrompt(facts.missing),
             thinking: 'low',
-          });
+          }, WORKER_RUNTIME_OPTIONS);
 
           if (retry.kind === 'delegated') {
             execution.push({
@@ -1041,7 +559,7 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
           const effectiveThinking = 'high';
 
           if (action.kind === 'work') {
-            const delegationState = await loadWorkerDelegationState(action.sessionId, action.ticketId);
+            const delegationState = await loadWorkerDelegationState(action.sessionId, action.ticketId, WORKER_RUNTIME_OPTIONS);
             if (delegationState.kind === 'running') {
               execution.push({
                 sessionId: action.sessionId,
@@ -1068,7 +586,7 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
             sessionId: action.sessionId,
             text: action.text,
             thinking: effectiveThinking,
-          });
+          }, WORKER_RUNTIME_OPTIONS);
 
           if (action.kind !== 'work') {
             continue;
