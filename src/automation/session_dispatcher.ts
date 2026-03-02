@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 export const DEFAULT_SESSION_MAP_PATH = '.tmp/kwf-session-map.json';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_WORKER_AGENT_MD_PATH = path.resolve(MODULE_DIR, '..', '..', 'AGENT.md');
+const DEFAULT_WORKER_AGENT_MD_PATH = path.resolve(MODULE_DIR, '..', '..', 'WORKER.md');
 
 function loadWorkerAgentGuide(): string | null {
   const overridePath = process.env.KWF_WORKER_AGENT_MD_PATH?.trim();
