@@ -255,3 +255,19 @@ Adapter tests (Plane):
 - Preferred scheduler: local system cron running `workflow-loop`.
 - Loop should remain fail-soft and idempotent per tick.
 - All error messages intended for user CLI paths should stay short and direct.
+
+## 13) OpenClaw execution boundary findings (2026-03-02)
+
+Validated runtime behavior and docs alignment for worker/decision execution:
+
+- `openclaw sessions` CLI is list/maintenance only (sessions + cleanup); it is not an execution entrypoint.
+- `sessions_spawn` / `sessions_send` are documented as agent tools (tool-policy surface), not stable public gateway RPC method names for local script orchestration.
+- `openclaw gateway call <method>` is low-level RPC and should be treated as less stable for this use case.
+- `openclaw agent` is the stable documented local CLI primitive for direct agent turns with session reuse (`--agent`, `--session-id`, `--message`, `--json`).
+
+Implementation decision:
+
+- `workflow-loop` stays local/non-agent orchestrator.
+- Worker and decision turns are executed via `openclaw agent ... --json`.
+- Session continuity is enforced by explicit `--session-id` values managed in `.tmp/kwf-session-map.json`.
+- Correlation metadata (`ticketId`, `dispatchRunId`) is included in the worker dispatch message envelope.
