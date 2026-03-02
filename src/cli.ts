@@ -15,7 +15,7 @@ import {
   saveSessionMap,
   type SessionMap,
 } from './automation/session_dispatcher.js';
-import { extractWorkerTerminalCommand, type WorkerTerminalCommand } from './automation/worker_contract.js';
+import type { WorkerTerminalCommand } from './automation/worker_contract.js';
 import { parseWorkerOutputFromAgentCall } from './workflow/agent_io.js';
 import {
   coerceDecisionChoice,
@@ -429,6 +429,10 @@ async function loadWorkerDelegationState(sessionId: string, ticketId: string): P
   const parsed = parseWorkerOutputFromAgentCall(stdoutRaw, stderrRaw);
   await clearWorkerDelegation(sessionId);
 
+  if (!parsed.ok) {
+    throw new Error(`Background worker turn failed for ticket ${ticketId}: ${parsed.error ?? 'unknown error'}`);
+  }
+
   return {
     kind: 'completed',
     meta,
@@ -472,6 +476,9 @@ async function dispatchWorkerTurn(params: {
     ]);
 
     const parsed = parseWorkerOutputFromAgentCall(run.stdout, run.stderr);
+    if (!parsed.ok) {
+      throw new Error(`Worker turn failed for ticket ${params.ticketId}: ${parsed.error ?? 'unknown error'}`);
+    }
     if (hasTimedOutFallbackMessage(parsed.workerOutput) || hasTimedOutFallbackMessage(parsed.raw)) {
       if (!allowBackgroundDelegation) {
         throw new Error(`Worker turn timed out for ticket ${params.ticketId}`);
@@ -605,6 +612,7 @@ async function decideWithAgent(params: {
     ]);
 
     const parsed = parseWorkerOutputFromAgentCall(run.stdout, run.stderr);
+    if (!parsed.ok) return null;
     state.ticketsUsedCount = Number(state.ticketsUsedCount ?? 0) + 1;
     state.contextChars = Number(state.contextChars ?? 0) + prompt.length + parsed.workerOutput.length;
 

@@ -42,11 +42,27 @@ export function extractWorkerReportFacts(report: string): WorkerReportFacts {
 }
 
 export function parseDecisionChoice(raw: string): DecisionChoice | null {
-  const text = String(raw ?? '').trim().toLowerCase();
+  const text = String(raw ?? '').trim();
   if (!text) return null;
-  if (/\bcompleted\b/.test(text)) return 'completed';
-  if (/\bblocked\b/.test(text)) return 'blocked';
-  if (/\bcontinue\b/.test(text)) return 'continue';
+
+  const normalized = text.toLowerCase().replace(/^["'`]+|["'`]+$/g, '').trim();
+  if (normalized === 'continue' || normalized === 'blocked' || normalized === 'completed') {
+    return normalized;
+  }
+
+  // Accept structured fallback if agent returns JSON-formatted decision.
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object') {
+      const candidate = String((parsed as any).decision ?? (parsed as any).label ?? (parsed as any).outcome ?? '').toLowerCase().trim();
+      if (candidate === 'continue' || candidate === 'blocked' || candidate === 'completed') {
+        return candidate;
+      }
+    }
+  } catch {
+    // no-op
+  }
+
   return null;
 }
 

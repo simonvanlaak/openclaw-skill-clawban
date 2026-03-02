@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   coerceDecisionChoice,
   extractWorkerReportFacts,
+  parseDecisionChoice,
   shouldQuietPollAfterCarryForward,
 } from '../src/workflow/decision_policy.js';
 
@@ -69,5 +70,13 @@ describe('workflow decision policy', () => {
         executionOutcomes: [],
       }),
     ).toBe(false);
+  });
+
+  it('parses only strict one-word decisions (or structured json)', () => {
+    expect(parseDecisionChoice('continue')).toBe('continue');
+    expect(parseDecisionChoice('  "blocked"  ')).toBe('blocked');
+    expect(parseDecisionChoice('I think continue')).toBeNull();
+    expect(parseDecisionChoice('not blocked, continue')).toBeNull();
+    expect(parseDecisionChoice('{"decision":"completed"}')).toBe('completed');
   });
 });

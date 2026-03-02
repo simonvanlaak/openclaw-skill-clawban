@@ -18,6 +18,7 @@ describe('agent io parsing', () => {
 
     expect(parsed.workerOutput).toBe('Line 1\nLine 2');
     expect(parsed.stderr).toBe(stderr);
+    expect(parsed.ok).toBe(true);
     expect(parsed.workerOutput).not.toContain('warning:');
   });
 
@@ -25,5 +26,15 @@ describe('agent io parsing', () => {
     const parsed = parseWorkerOutputFromAgentCall('plain markdown report', '');
     expect(parsed.workerOutput).toBe('plain markdown report');
     expect(parsed.raw).toBe('plain markdown report');
+    expect(parsed.ok).toBe(true);
+  });
+
+  it('marks non-ok agent json responses as errors', () => {
+    const parsed = parseWorkerOutputFromAgentCall(
+      JSON.stringify({ status: 'error', error: { message: 'model unavailable' } }),
+      '',
+    );
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error).toContain('model unavailable');
   });
 });
