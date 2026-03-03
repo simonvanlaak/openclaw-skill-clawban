@@ -198,7 +198,6 @@ Supported commands:
 - `kanban-workflow workflow-loop [--dry-run]`
 
 Removed commands/features:
-- `autopilot-tick`
 - `next`
 - manual mutation commands (`start|update|ask|complete`)
 - legacy aliases (`continue|blocked|completed` as direct user commands)

@@ -7,7 +7,6 @@ Plane-only workflow automation with a local `workflow-loop` runner and LLM worke
 - Adapter support: **Plane only**.
 - Orchestration: `workflow-loop` (poll/select/delegate/apply).
 - Legacy multi-adapter surface is removed.
-- Legacy user command `autopilot-tick` is removed.
 
 ## Commands
 

@@ -50,7 +50,6 @@ Done/closed remains platform-specific.
 - `help`
 
 Removed from user CLI:
-- `autopilot-tick`
 - `next`
 - `start`
 - `update`

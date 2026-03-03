@@ -12,8 +12,8 @@ import {
   buildWorkflowLoopPlan,
   loadSessionMap,
   saveSessionMap,
+  type WorkerCommandResult,
 } from './automation/session_dispatcher.js';
-import type { WorkerTerminalCommand } from './automation/worker_contract.js';
 import { decideWithAgent } from './workflow/decision_agent.js';
 import {
   coerceDecisionChoice,
@@ -37,8 +37,6 @@ import {
 } from './workflow/worker_runtime.js';
 import { StageKeySchema } from './stage.js';
 import { ask, complete, create, show, start, update } from './verbs/verbs.js';
-
-export { extractWorkerTerminalCommand } from './automation/worker_contract.js';
 
 export type CliIo = {
   stdout: { write(chunk: string): void };
@@ -470,7 +468,7 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
       const execution: Array<{
         sessionId: string;
         ticketId: string;
-        parsed: WorkerTerminalCommand | null;
+        parsed: WorkerCommandResult | null;
         workerOutput: string;
         outcome: 'applied' | 'mutation_error' | 'delegated_started' | 'delegated_running';
         detail?: string;
@@ -514,7 +512,7 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
           continueCount: continueCountForTicket(plan.map, action.ticketId),
         });
 
-        const parsed: WorkerTerminalCommand =
+        const parsed: WorkerCommandResult =
           decision === 'continue'
             ? { kind: 'continue', text: summarizeReportForComment(report) }
             : decision === 'blocked'
