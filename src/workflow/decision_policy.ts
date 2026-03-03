@@ -87,12 +87,35 @@ export function coerceDecisionChoice(input: {
 export function summarizeReportForComment(report: string, maxChars = 1200): string {
   const normalized = String(report ?? '').replace(/\r\n?/g, '\n').trim();
   if (!normalized) return 'No report details provided.';
-  if (normalized.length <= maxChars) return normalized;
 
-  const sliced = normalized.slice(0, maxChars);
-  const newlineCut = sliced.lastIndexOf('\n');
-  const cutAt = newlineCut >= Math.floor(maxChars * 0.6) ? newlineCut : maxChars;
-  return `${sliced.slice(0, cutAt).trimEnd()}...`;
+  const facts = extractWorkerReportFacts(normalized);
+  if (facts.missing.length > 0) {
+    const msg = `Blockers (OPEN): worker report missing ${facts.missing.join(', ')}. Ask: please include blockers (open/resolved) and questions for humans to resolve.`;
+    return msg.length <= maxChars ? msg : `${msg.slice(0, maxChars).trimEnd()}...`;
+  }
+
+  const plain = normalized
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/\|/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!plain) return 'No report details provided.';
+
+  const sentences = plain
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const indexWithSignal = sentences.findIndex((s) => /\bblocker(s)?\b|\bblocked\b|\bquestion(s)?\b|\bask\b/i.test(s));
+  const start = indexWithSignal >= 0 ? indexWithSignal : 0;
+
+  const picked = sentences.slice(start, start + 3).join(' ');
+  if (picked.length <= maxChars) return picked;
+  return `${picked.slice(0, maxChars).trimEnd()}...`;
 }
 
 export function shouldQuietPollAfterCarryForward(params: {

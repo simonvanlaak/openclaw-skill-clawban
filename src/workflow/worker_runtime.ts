@@ -31,6 +31,7 @@ export type WorkerRuntimeOptions = {
   defaultSyncTimeoutMs: number;
   defaultBackgroundTimeoutMs: number;
   isBackgroundDelegationAllowed(agentId: string): boolean;
+  shouldStartInBackground?(agentId: string): boolean;
 };
 
 function resolvePositiveInt(raw: string | undefined, fallback: number): number {
@@ -48,12 +49,14 @@ function shellQuote(value: string): string {
 
 function withDispatchMetadataEnvelope(params: {
   ticketId: string;
+  projectId?: string;
   dispatchRunId: string;
   text: string;
 }): string {
   return [
     'DISPATCH_METADATA',
     `ticketId: ${params.ticketId}`,
+    ...(params.projectId ? [`projectId: ${params.projectId}`] : []),
     `dispatchRunId: ${params.dispatchRunId}`,
     '',
     params.text,
@@ -131,6 +134,7 @@ function buildDelegationNotice(params: {
 async function startWorkerDelegation(
   params: {
     ticketId: string;
+    projectId?: string;
     dispatchRunId: string;
     agentId: string;
     sessionId: string;
@@ -142,6 +146,7 @@ async function startWorkerDelegation(
 ): Promise<void> {
   const message = withDispatchMetadataEnvelope({
     ticketId: params.ticketId,
+    projectId: params.projectId,
     dispatchRunId: params.dispatchRunId,
     text: params.text,
   });
@@ -248,6 +253,7 @@ export async function loadWorkerDelegationState(
 export async function dispatchWorkerTurn(
   params: {
     ticketId: string;
+    projectId?: string;
     dispatchRunId: string;
     agentId: string;
     sessionId: string;
@@ -256,8 +262,32 @@ export async function dispatchWorkerTurn(
   },
   opts: WorkerRuntimeOptions,
 ): Promise<DispatchWorkerTurnResult> {
+  const startInBackground = Boolean(opts.shouldStartInBackground?.(params.agentId));
+  if (startInBackground) {
+    const syncTimeoutMs = resolvePositiveInt(process.env.KWF_WORKER_SYNC_TIMEOUT_MS, opts.defaultSyncTimeoutMs);
+    await startWorkerDelegation(
+      {
+        ticketId: params.ticketId,
+        projectId: params.projectId,
+        dispatchRunId: params.dispatchRunId,
+        agentId: params.agentId,
+        sessionId: params.sessionId,
+        text: params.text,
+        thinking: params.thinking,
+        syncTimeoutMs,
+      },
+      opts,
+    );
+
+    return {
+      kind: 'delegated',
+      notice: `Worker dispatched in background for ticket ${params.ticketId}. Session: ${params.sessionId}.`,
+    };
+  }
+
   const message = withDispatchMetadataEnvelope({
     ticketId: params.ticketId,
+    projectId: params.projectId,
     dispatchRunId: params.dispatchRunId,
     text: params.text,
   });
@@ -294,6 +324,7 @@ export async function dispatchWorkerTurn(
       await startWorkerDelegation(
         {
           ticketId: params.ticketId,
+          projectId: params.projectId,
           dispatchRunId: params.dispatchRunId,
           agentId: params.agentId,
           sessionId: params.sessionId,
@@ -325,6 +356,7 @@ export async function dispatchWorkerTurn(
     await startWorkerDelegation(
       {
         ticketId: params.ticketId,
+        projectId: params.projectId,
         dispatchRunId: params.dispatchRunId,
         agentId: params.agentId,
         sessionId: params.sessionId,

@@ -26,6 +26,10 @@ import {
   type NoWorkAlertResult,
 } from './workflow/no_work_alert.js';
 import {
+  maybeUpdateRocketChatStatusFromWorkflowLoop,
+  type RocketChatStatusUpdate,
+} from './workflow/rocketchat_status.js';
+import {
   archiveStaleBlockedWorkerSessions,
   buildRetryPrompt,
   continueCountForTicket,
@@ -104,7 +108,7 @@ function isBackgroundWorkerDelegationAllowed(agentId: string): boolean {
   // That behavior is acceptable for the human-facing workflow-loop, but it is too noisy for
   // per-ticket worker turns (it ends up as spammy comments on the work item).
   if (agentId === WORKFLOW_LOOP_AGENT_ID) return true;
-  if (agentId === WORKER_AGENT_ID) return false;
+  if (agentId === WORKER_AGENT_ID) return true;
 
   // Default: disabled. (If we ever need it for other agents, add an explicit allowlist.)
   return false;
@@ -115,6 +119,7 @@ const WORKER_RUNTIME_OPTIONS: WorkerRuntimeOptions = {
   defaultSyncTimeoutMs: DEFAULT_WORKER_SYNC_TIMEOUT_MS,
   defaultBackgroundTimeoutMs: DEFAULT_WORKER_BACKGROUND_TIMEOUT_MS,
   isBackgroundDelegationAllowed: isBackgroundWorkerDelegationAllowed,
+  shouldStartInBackground: (agentId: string) => agentId === WORKER_AGENT_ID,
 };
 
 async function ensurePlaneEnvFromHelper(): Promise<void> {
@@ -474,14 +479,16 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
         detail?: string;
       }> = [];
       let noWorkAlert: NoWorkAlertResult | null = null;
+      let rocketChatStatusUpdate: RocketChatStatusUpdate | null = null;
 
-      const applyWorkerOutput = async (action: { sessionId: string; ticketId: string }, workerOutput: string, detailPrefix?: string): Promise<void> => {
+      const applyWorkerOutput = async (action: { sessionId: string; ticketId: string; projectId?: string }, workerOutput: string, detailPrefix?: string): Promise<void> => {
         let report = workerOutput;
         let facts = extractWorkerReportFacts(report);
 
         if (facts.missing.length > 0) {
           const retry = await dispatchWorkerTurn({
             ticketId: action.ticketId,
+            projectId: action.projectId,
             dispatchRunId,
             agentId: WORKER_AGENT_ID,
             sessionId: action.sessionId,
@@ -514,10 +521,10 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
 
         const parsed: WorkerCommandResult =
           decision === 'continue'
-            ? { kind: 'continue', text: summarizeReportForComment(report) }
+            ? { kind: 'continue', text: summarizeReportForComment(report, 420) }
             : decision === 'blocked'
-              ? { kind: 'blocked', text: summarizeReportForComment(report) }
-              : { kind: 'completed', result: summarizeReportForComment(report) };
+              ? { kind: 'blocked', text: summarizeReportForComment(report, 420) }
+              : { kind: 'completed', result: summarizeReportForComment(report, 420) };
 
         try {
           if (parsed.kind === 'continue') {
@@ -529,7 +536,15 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
           }
 
           applyWorkerCommandToSessionMap(plan.map, action.ticketId, parsed, new Date());
-          const evidence = `report.missing=${facts.missing.length}`;
+          const evidence = [
+            `report.missing=${facts.missing.length}`,
+            `rawDecision=${rawDecision ?? 'null'}`,
+            `coercedDecision=${decision}`,
+            `hasVerification=${facts.hasVerification}`,
+            `hasResolvedBlockers=${facts.hasResolvedBlockers}`,
+            `hasUncertainties=${facts.hasUncertainties}`,
+            `hasConfidence=${facts.hasConfidence}`,
+          ].join('; ');
           execution.push({
             sessionId: action.sessionId,
             ticketId: action.ticketId,
@@ -579,6 +594,7 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
 
           const dispatched = await dispatchWorkerTurn({
             ticketId: action.ticketId,
+            projectId: action.projectId,
             dispatchRunId,
             agentId: effectiveAgent,
             sessionId: action.sessionId,
@@ -615,6 +631,13 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
           dryRun,
         });
 
+        rocketChatStatusUpdate = await maybeUpdateRocketChatStatusFromWorkflowLoop({
+          output,
+          previousMap,
+          map: plan.map,
+          dryRun,
+        });
+
         await saveSessionMap(plan.map);
 
         if (
@@ -633,6 +656,13 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
           map: plan.map,
           dryRun,
         });
+
+        rocketChatStatusUpdate = await maybeUpdateRocketChatStatusFromWorkflowLoop({
+          output,
+          previousMap,
+          map: plan.map,
+          dryRun,
+        });
       }
 
       io.stdout.write(
@@ -643,6 +673,7 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
             actions: plan.actions,
             execution,
             noWorkAlert,
+            rocketChatStatusUpdate,
             activeTicketId: plan.activeTicketId,
             mapPath: '.tmp/kwf-session-map.json',
           },

@@ -41,6 +41,11 @@ export type SessionMap = {
     firstHitAlertChannel?: string;
     firstHitAlertTarget?: string;
   };
+  rocketChatStatus?: {
+    lastMessage?: string;
+    lastUpdatedAt?: string;
+    lastError?: string;
+  };
   sessionsByTicket: Record<string, SessionEntry>;
 };
 
@@ -49,6 +54,7 @@ export type DispatchAction = {
   sessionId: string;
   sessionLabel?: string;
   ticketId: string;
+  projectId?: string;
   text: string;
 };
 
@@ -59,6 +65,7 @@ export type WorkerCommandResult =
 
 type TicketContext = {
   id: string;
+  projectId?: string;
   title?: string;
   body?: string;
   url?: string;
@@ -110,6 +117,17 @@ export async function loadSessionMap(path = DEFAULT_SESSION_MAP_PATH): Promise<S
           }
         : undefined;
 
+    const rocketChatStatus =
+      parsed.rocketChatStatus && typeof parsed.rocketChatStatus === 'object'
+        ? {
+            lastMessage:
+              typeof parsed.rocketChatStatus.lastMessage === 'string' ? parsed.rocketChatStatus.lastMessage : undefined,
+            lastUpdatedAt:
+              typeof parsed.rocketChatStatus.lastUpdatedAt === 'string' ? parsed.rocketChatStatus.lastUpdatedAt : undefined,
+            lastError: typeof parsed.rocketChatStatus.lastError === 'string' ? parsed.rocketChatStatus.lastError : undefined,
+          }
+        : undefined;
+
     return {
       version: 1,
       active:
@@ -117,6 +135,7 @@ export async function loadSessionMap(path = DEFAULT_SESSION_MAP_PATH): Promise<S
           ? { ticketId: parsed.active.ticketId, sessionId: parsed.active.sessionId }
           : undefined,
       noWork,
+      rocketChatStatus,
       sessionsByTicket,
     };
   } catch {
@@ -367,6 +386,7 @@ function extractTicketContext(payload: any, fallbackTicketId: string): TicketCon
 
   return {
     id: String(item?.id ?? fallbackTicketId),
+    projectId: item?.projectId ? String(item.projectId) : item?.project_id ? String(item.project_id) : undefined,
     title: item?.title ? String(item.title) : undefined,
     body: item?.body ? String(item.body) : undefined,
     url: item?.url ? String(item.url) : undefined,
@@ -426,6 +446,7 @@ function compactContextForPrompt(context: TicketContext): Record<string, unknown
   const compact: Record<string, unknown> = {
     id: context.id,
   };
+  if (context.projectId) compact.projectId = context.projectId;
   if (context.title) compact.title = context.title;
   if (context.body) compact.body = context.body;
   if (context.url) compact.url = context.url;
@@ -548,6 +569,11 @@ export function buildWorkflowLoopPlan(params: {
         sessionId,
         sessionLabel,
         ticketId: nextTicketId,
+        projectId: output?.nextTicket?.item?.projectId
+          ? String(output.nextTicket.item.projectId)
+          : output?.nextTicket?.item?.project_id
+            ? String(output.nextTicket.item.project_id)
+            : undefined,
         text: buildWorkInstruction({
           ticketId: nextTicketId,
           sessionDisplayId: nextTicketDisplayId,
@@ -579,6 +605,11 @@ export function buildWorkflowLoopPlan(params: {
       sessionId,
       sessionLabel,
       ticketId: currentTicketId,
+      projectId: activeTicketPayload?.item?.projectId
+        ? String(activeTicketPayload.item.projectId)
+        : activeTicketPayload?.item?.project_id
+          ? String(activeTicketPayload.item.project_id)
+          : undefined,
       text: buildWorkInstruction({
         ticketId: currentTicketId,
         sessionDisplayId: currentTicketDisplayId,

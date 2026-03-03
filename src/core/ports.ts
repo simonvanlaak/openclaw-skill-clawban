@@ -20,6 +20,7 @@ export type WorkItemAttachment = {
 
 export type WorkItemDetails = {
   id: string;
+  projectId?: string;
   title: string;
   url?: string;
   stage: StageKey;

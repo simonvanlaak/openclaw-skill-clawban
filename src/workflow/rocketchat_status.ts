@@ -1,0 +1,170 @@
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+import type { SessionMap } from '../automation/session_dispatcher.js';
+
+export type RocketChatStatusUpdate = {
+  outcome: 'updated' | 'skipped_disabled' | 'skipped_dry_run' | 'skipped_unchanged' | 'error';
+  desiredMessage?: string;
+  status?: string;
+  detail?: string;
+};
+
+function cleanOneLine(raw: string): string {
+  return raw.replace(/\s+/g, ' ').trim();
+}
+
+type OpenclawConfig = {
+  channels?: {
+    rocketchat?: {
+      baseUrl?: string;
+      userId?: string;
+      authToken?: string;
+      authTokenFile?: string;
+      accounts?: Record<string, { baseUrl?: string; userId?: string; authToken?: string; authTokenFile?: string }>;
+    };
+  };
+};
+
+function defaultOpenclawConfigPath(): string {
+  // OpenClaw standard location (see `openclaw config file`).
+  return path.join(os.homedir(), '.openclaw', 'openclaw.json');
+}
+
+async function loadOpenclawConfig(): Promise<OpenclawConfig | null> {
+  const cfgPath = process.env.OPENCLAW_CONFIG_PATH?.trim() || defaultOpenclawConfigPath();
+  const raw = await fs.readFile(cfgPath, 'utf8').catch(() => '');
+  if (!raw.trim()) return null;
+  try {
+    return JSON.parse(raw) as OpenclawConfig;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveRocketChatCredentials(): Promise<{ baseUrl: string; userId: string; authToken: string } | null> {
+  // IMPORTANT: `openclaw config get channels.rocketchat.authToken` returns a redacted value.
+  // For status updates we need the real token, so we read the local config file.
+  const cfg = await loadOpenclawConfig();
+  const rc = cfg?.channels?.rocketchat;
+  if (!rc) return null;
+
+  const baseUrl = cleanOneLine(rc.baseUrl ?? '');
+  const userId = cleanOneLine(rc.userId ?? '');
+
+  let authToken = cleanOneLine(rc.authToken ?? '');
+  if (!authToken) {
+    const authTokenFile = cleanOneLine(rc.authTokenFile ?? '');
+    if (authTokenFile) {
+      authToken = cleanOneLine(await fs.readFile(authTokenFile, 'utf8').catch(() => ''));
+    }
+  }
+
+  if (!baseUrl || !userId || !authToken) return null;
+  return { baseUrl: baseUrl.replace(/\/+$/, ''), userId, authToken };
+}
+
+function desiredMessageFromLoop(params: { activeTicketId: string | null; activeTitle?: string; tickKind?: string; reasonCode?: string }): string {
+  if (params.tickKind === 'no_work') {
+    const suffix = params.reasonCode ? ` (reason: ${params.reasonCode})` : '';
+    return `KWF idle${suffix}`;
+  }
+
+  if (!params.activeTicketId) return 'KWF idle';
+
+  const title = cleanOneLine(params.activeTitle ?? '');
+  const prefix = 'KWF working on';
+  const raw = title ? `${prefix} ${params.activeTicketId}: ${title}` : `${prefix} ${params.activeTicketId}`;
+
+  // Keep it short so Rocket.Chat status UI stays readable.
+  return raw.length > 96 ? `${raw.slice(0, 93)}...` : raw;
+}
+
+async function setRocketChatStatus(params: { baseUrl: string; userId: string; authToken: string; status: string; message: string }): Promise<void> {
+  const res = await fetch(`${params.baseUrl}/api/v1/users.setStatus`, {
+    method: 'POST',
+    headers: {
+      'X-User-Id': params.userId,
+      'X-Auth-Token': params.authToken,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ status: params.status, message: params.message }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Rocket.Chat users.setStatus failed: http=${res.status} body=${text.slice(0, 200)}`);
+  }
+}
+
+export async function maybeUpdateRocketChatStatusFromWorkflowLoop(params: {
+  output: any;
+  previousMap: SessionMap;
+  map: SessionMap;
+  dryRun: boolean;
+}): Promise<RocketChatStatusUpdate | null> {
+  const enabledRaw = cleanOneLine(process.env.KWF_ROCKETCHAT_STATUS_ENABLED ?? '1');
+  const enabled = !['0', 'false', 'no', 'off'].includes(enabledRaw.toLowerCase());
+  if (!enabled) return { outcome: 'skipped_disabled', detail: 'KWF_ROCKETCHAT_STATUS_ENABLED=false' };
+
+  const tick = params.output?.tick;
+  const tickKind = typeof tick?.kind === 'string' ? tick.kind : undefined;
+  const reasonCode = typeof tick?.reasonCode === 'string' ? tick.reasonCode : undefined;
+
+  const activeTicketId = typeof params.output?.nextTicket?.id === 'string'
+    ? params.output.nextTicket.id
+    : typeof params.output?.nextTicket?.item?.id === 'string'
+      ? params.output.nextTicket.item.id
+      : null;
+
+  const activeTitle = typeof params.output?.nextTicket?.title === 'string'
+    ? params.output.nextTicket.title
+    : typeof params.output?.nextTicket?.item?.title === 'string'
+      ? params.output.nextTicket.item.title
+      : undefined;
+
+  const desiredMessage = desiredMessageFromLoop({
+    activeTicketId,
+    activeTitle,
+    tickKind,
+    reasonCode,
+  });
+
+  const prev = (params.previousMap as any)?.rocketChatStatus?.lastMessage;
+  if (typeof prev === 'string' && cleanOneLine(prev) === desiredMessage) {
+    return { outcome: 'skipped_unchanged', desiredMessage };
+  }
+
+  if (params.dryRun) {
+    return { outcome: 'skipped_dry_run', desiredMessage };
+  }
+
+  const creds = await resolveRocketChatCredentials();
+  if (!creds) {
+    return { outcome: 'error', desiredMessage, detail: 'missing_rocketchat_credentials_in_openclaw_config' };
+  }
+
+  try {
+    await setRocketChatStatus({
+      ...creds,
+      status: 'online',
+      message: desiredMessage,
+    });
+
+    (params.map as any).rocketChatStatus = {
+      lastMessage: desiredMessage,
+      lastUpdatedAt: new Date().toISOString(),
+    };
+
+    return { outcome: 'updated', desiredMessage, status: 'online' };
+  } catch (err: any) {
+    (params.map as any).rocketChatStatus = {
+      lastMessage: desiredMessage,
+      lastUpdatedAt: new Date().toISOString(),
+      lastError: err?.message ?? String(err),
+    };
+
+    return { outcome: 'error', desiredMessage, detail: err?.message ?? String(err) };
+  }
+}

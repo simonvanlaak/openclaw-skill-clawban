@@ -555,6 +555,7 @@ export class PlaneAdapter implements Adapter {
 
   async getWorkItem(id: string): Promise<{
     id: string;
+    projectId?: string;
     title: string;
     url?: string;
     stage: import('../stage.js').StageKey;
@@ -584,6 +585,7 @@ export class PlaneAdapter implements Adapter {
 
     return {
       id: item.id,
+      projectId,
       title: item.title,
       url: item.url,
       stage: item.stage.key,

@@ -81,25 +81,36 @@ describe('workflow decision policy', () => {
     expect(parseDecisionChoice('{"decision":"completed"}')).toBe('completed');
   });
 
-  it('preserves markdown formatting when summarizing report comments', () => {
+  it('summarizes report comments to a few plain sentences', () => {
     const report = [
       '# Status Report',
       '',
       '## Verification Evidence',
-      '- item one',
-      '- item two',
+      '- Verified no-work alert defaults in code.',
+      '- Ran targeted tests and they passed.',
       '',
       '## Blockers',
-      '| Blocker | Status |',
-      '|---|---|',
-      '| SSH | OPEN |',
+      '| Blocker | Status | Details |',
+      '|---|---|---|',
+      '| SSH | OPEN | Access unavailable |',
+      '',
+      '## Uncertainties',
+      '- Uncertainty: none.',
+      '',
+      '## Confidence',
+      '0.9',
+      '',
+      '## Extra',
+      'This sentence should not appear when limited to three sentences.',
     ].join('\n');
 
-    const out = summarizeReportForComment(report, 1000);
-    expect(out).toContain('# Status Report');
-    expect(out).toContain('## Verification Evidence');
-    expect(out).toContain('- item one');
-    expect(out).toContain('| Blocker | Status |');
-    expect(out).toContain('\n');
+    const out = summarizeReportForComment(report, 420);
+    expect(out).not.toContain('\n');
+    const sentenceCount = out.split(/[.!?]\s+/).filter(Boolean).length;
+    expect(sentenceCount).toBeLessThanOrEqual(3);
+    // Summaries should prioritize actionable sections (Blockers/Questions) when present.
+    expect(out).toContain('SSH');
+    expect(out).toContain('OPEN');
+    expect(out).toContain('Access unavailable');
   });
 });
