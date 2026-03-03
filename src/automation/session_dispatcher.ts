@@ -67,6 +67,15 @@ type TicketContext = {
   links: Array<{ id?: string; title?: string; url?: string; relation?: string }>;
 };
 
+const WORKER_POLICY_DIGEST = [
+  'WORKER_POLICY_DIGEST (resume turn):',
+  '- Execute at least one concrete step this turn unless truly blocked.',
+  '- Reply with markdown report only.',
+  '- Required report facts: verification evidence, blockers (open/resolved), uncertainties, confidence (0.0..1.0).',
+  '- If no concrete execution happened, prefer blocked with explicit blocker details.',
+  '- Keep output concise and evidence-backed; avoid boilerplate.',
+].join('\n');
+
 export type WorkflowLoopPlan = {
   map: SessionMap;
   actions: DispatchAction[];
@@ -309,6 +318,13 @@ function extractIssueKeyLinks(text: string | undefined): Array<{ title: string; 
   return unique.map((k) => ({ title: k, relation: 'mentioned' }));
 }
 
+function asIso(value: unknown): string | undefined {
+  if (!value) return undefined;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
+  const parsed = new Date(String(value));
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+}
+
 function extractTicketContext(payload: any, fallbackTicketId: string): TicketContext {
   const item = payload?.item ?? {};
   const commentsRaw: any[] = Array.isArray(payload?.comments) ? payload.comments : [];
@@ -320,7 +336,7 @@ function extractTicketContext(payload: any, fallbackTicketId: string): TicketCon
   ];
 
   const comments = commentsRaw.map((c) => ({
-    at: c?.createdAt ? String(c.createdAt) : undefined,
+    at: asIso(c?.createdAt),
     author: normalizeCommentAuthor(c?.author),
     body: c?.body ? String(c.body) : undefined,
     internal: typeof c?.internal === 'boolean' ? c.internal : undefined,
@@ -406,21 +422,64 @@ function resolveSessionDisplayId(ticketId: string, payload: any): string {
   return ticketId;
 }
 
-function buildWorkInstruction(ticketId: string, payload: any, sessionLabel: string): string {
-  const context = extractTicketContext(payload, ticketId);
-  const contextJson = JSON.stringify(context, null, 2);
+function compactContextForPrompt(context: TicketContext): Record<string, unknown> {
+  const compact: Record<string, unknown> = {
+    id: context.id,
+  };
+  if (context.title) compact.title = context.title;
+  if (context.body) compact.body = context.body;
+  if (context.url) compact.url = context.url;
+  if (context.comments.length > 0) compact.comments = context.comments.slice(0, 3);
+  if (context.attachments.length > 0) compact.attachments = context.attachments;
+  if (context.links.length > 0) compact.links = context.links;
+  return compact;
+}
+
+function buildDeltaSinceLastTurn(context: TicketContext, previousSeenAtIso?: string): string {
+  if (!previousSeenAtIso) return 'none (new session)';
+  const previousMs = Date.parse(previousSeenAtIso);
+  if (!Number.isFinite(previousMs)) return 'none';
+
+  const newComments = context.comments
+    .filter((c) => {
+      const atMs = Date.parse(String(c.at ?? ''));
+      return Number.isFinite(atMs) && atMs > previousMs;
+    })
+    .slice(0, 3)
+    .map((c, idx) => `${idx + 1}. [${c.at ?? 'unknown-time'}] ${c.author ?? 'unknown'}: ${c.body ?? ''}`);
+
+  if (newComments.length === 0) return 'none';
+  return newComments.join('\n');
+}
+
+function buildWorkInstruction(params: {
+  ticketId: string;
+  sessionDisplayId: string;
+  payload: any;
+  sessionLabel: string;
+  includeFullGuide: boolean;
+  previousSeenAtIso?: string;
+}): string {
+  const context = extractTicketContext(params.payload, params.ticketId);
+  const contextJson = JSON.stringify(compactContextForPrompt(context), null, 2);
+  const delta = buildDeltaSinceLastTurn(context, params.previousSeenAtIso);
   const workerAgentGuide = loadWorkerAgentGuide();
 
   return [
-    `DO WORK NOW on ticket ${ticketId}.`,
-    `Session label: ${sessionLabel}`,
-    ...(workerAgentGuide
+    `Ticket: ${params.sessionDisplayId} (${params.ticketId})`,
+    `Goal: ${context.title ?? 'Continue assigned ticket execution.'}`,
+    `Session label: ${params.sessionLabel}`,
+    'Expected output: markdown report for forced decision (continue|blocked|completed).',
+    '',
+    'DELTA_SINCE_LAST_TURN',
+    delta,
+    ...(params.includeFullGuide && workerAgentGuide
       ? [
           '',
           'WORKER_AGENT_MD (mandatory instructions loaded at task start):',
           workerAgentGuide,
         ]
-      : []),
+      : ['', WORKER_POLICY_DIGEST]),
     '',
     'Use the context JSON below as the single source of truth for this turn.',
     '',
@@ -476,7 +535,8 @@ export function buildWorkflowLoopPlan(params: {
     if (nextTicketId) {
       const nextTicketTitle = output?.nextTicket?.item?.title ? String(output.nextTicket.item.title) : undefined;
       const nextTicketDisplayId = resolveSessionDisplayId(nextTicketId, output?.nextTicket);
-      const { sessionId, sessionLabel } = ensureSessionForTicket(
+      const previousEntry = map.sessionsByTicket[nextTicketId];
+      const { sessionId, sessionLabel, reused } = ensureSessionForTicket(
         map,
         nextTicketId,
         nowIso,
@@ -488,7 +548,14 @@ export function buildWorkflowLoopPlan(params: {
         sessionId,
         sessionLabel,
         ticketId: nextTicketId,
-        text: buildWorkInstruction(nextTicketId, output?.nextTicket, sessionLabel),
+        text: buildWorkInstruction({
+          ticketId: nextTicketId,
+          sessionDisplayId: nextTicketDisplayId,
+          payload: output?.nextTicket,
+          sessionLabel,
+          includeFullGuide: !reused,
+          previousSeenAtIso: previousEntry?.lastSeenAt,
+        }),
       });
       return { map, actions, activeTicketId: nextTicketId };
     }
@@ -499,7 +566,8 @@ export function buildWorkflowLoopPlan(params: {
   if (currentTicketId) {
     const currentTicketTitle = activeTicketPayload?.item?.title ? String(activeTicketPayload.item.title) : undefined;
     const currentTicketDisplayId = resolveSessionDisplayId(currentTicketId, activeTicketPayload);
-    const { sessionId, sessionLabel } = ensureSessionForTicket(
+    const previousEntry = map.sessionsByTicket[currentTicketId];
+    const { sessionId, sessionLabel, reused } = ensureSessionForTicket(
       map,
       currentTicketId,
       nowIso,
@@ -511,7 +579,14 @@ export function buildWorkflowLoopPlan(params: {
       sessionId,
       sessionLabel,
       ticketId: currentTicketId,
-      text: buildWorkInstruction(currentTicketId, activeTicketPayload, sessionLabel),
+      text: buildWorkInstruction({
+        ticketId: currentTicketId,
+        sessionDisplayId: currentTicketDisplayId,
+        payload: activeTicketPayload,
+        sessionLabel,
+        includeFullGuide: !reused,
+        previousSeenAtIso: previousEntry?.lastSeenAt,
+      }),
     });
     return { map, actions, activeTicketId: currentTicketId };
   }

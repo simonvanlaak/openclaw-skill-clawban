@@ -31,7 +31,7 @@ describe('session workflow-loop', () => {
     expect(first.actions).toHaveLength(1);
     expect(first.actions[0]?.kind).toBe('work');
     expect(first.actions[0]?.sessionLabel).toBe('A1 Fix login race');
-    expect(first.actions[0]?.text).toContain('DO WORK NOW on ticket A1.');
+    expect(first.actions[0]?.text).toContain('Ticket: A1 (A1)');
     expect(first.actions[0]?.text).toContain('Session label: A1 Fix login race');
     expect(first.actions[0]?.text).toContain('WORKER_AGENT_MD (mandatory instructions loaded at task start):');
     expect(first.actions[0]?.text).toContain('## 2) Plane skill usage (required when task touches Plane)');
@@ -66,7 +66,7 @@ describe('session workflow-loop', () => {
     expect(third.actions).toHaveLength(2);
     expect(third.actions[0]).toMatchObject({ kind: 'finalize', ticketId: 'A1', sessionId: a1Session });
     expect(third.actions[1]).toMatchObject({ kind: 'work', ticketId: 'B2' });
-    expect(third.actions[1]?.text).toContain('DO WORK NOW on ticket B2.');
+    expect(third.actions[1]?.text).toContain('Ticket: B2 (B2)');
     expect(third.actions[1]?.sessionId).not.toBe(a1Session);
     expect(third.map.active?.ticketId).toBe('B2');
     expect(third.map.sessionsByTicket.A1?.closedAt).toBeTruthy();
