@@ -1,4 +1,5 @@
 export type DecisionChoice = 'continue' | 'blocked' | 'completed';
+export type DecisionProbabilities = Partial<Record<DecisionChoice, number>>;
 
 export type WorkerReportFacts = {
   hasVerification: boolean;
@@ -116,6 +117,86 @@ export function summarizeReportForComment(report: string, maxChars = 1200): stri
   const picked = sentences.slice(start, start + 3).join(' ');
   if (picked.length <= maxChars) return picked;
   return `${picked.slice(0, maxChars).trimEnd()}...`;
+}
+
+export function extractDecisionProbabilities(report: string): DecisionProbabilities {
+  const text = String(report ?? '');
+  const read = (label: DecisionChoice): number | undefined => {
+    const match = text.match(new RegExp(`\\b${label}\\b\\s*[:=]\\s*([0-9]+(?:\\.[0-9]+)?%?)`, 'i'));
+    if (!match?.[1]) return undefined;
+    const raw = match[1].trim();
+    const isPct = raw.endsWith('%');
+    const n = Number(isPct ? raw.slice(0, -1) : raw);
+    if (!Number.isFinite(n) || n < 0) return undefined;
+    const value = isPct || n > 1 ? n / 100 : n;
+    return value <= 1 ? value : undefined;
+  };
+
+  const out: DecisionProbabilities = {};
+  const c = read('continue');
+  const b = read('blocked');
+  const d = read('completed');
+  if (c != null) out.continue = c;
+  if (b != null) out.blocked = b;
+  if (d != null) out.completed = d;
+  return out;
+}
+
+function firstSentenceWithSignal(text: string, signal: RegExp): string | undefined {
+  const sentences = text
+    .replace(/\r\n?/g, '\n')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/\|/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  return sentences.find((s) => signal.test(s)) ?? sentences[0];
+}
+
+function clampLine(label: string, text: string, maxChars: number): string {
+  const line = `${label}${text.trim()}`;
+  if (line.length <= maxChars) return line;
+  return `${line.slice(0, maxChars).trimEnd()}...`;
+}
+
+export function formatBlockedComment(report: string, facts: WorkerReportFacts, maxChars = 900): string {
+  if (facts.missing.length > 0) {
+    const lines = [
+      'BLOCKED',
+      'Blocked because: worker report is still missing required evidence after one follow-up.',
+      `Human action required: confirm whether to (A) let runtime retry next cycle or (B) hand this ticket to a human now.`,
+      `Evidence: missing fields -> ${facts.missing.join(', ')}.`,
+      'Next action after unblock: I will continue execution with the selected path immediately.',
+    ];
+    const body = lines.join('\n');
+    return body.length <= maxChars ? body : `${body.slice(0, maxChars).trimEnd()}...`;
+  }
+
+  const reason =
+    firstSentenceWithSignal(report, /\bblocker(s)?\b|\bblocked\b|\bdependency\b|\bcannot\b|\bcan\'t\b/i) ??
+    'External dependency is preventing safe forward progress.';
+  const humanAsk =
+    firstSentenceWithSignal(report, /\bask\b|\bplease\b|\bquestion(s)?\b|\bneed\b|\bconfirm\b/i) ??
+    'Please confirm how to resolve the blocker so I can proceed.';
+  const evidence =
+    firstSentenceWithSignal(report, /\bverification\b|\bverified\b|\btest(s)?\b|\berror\b|\bhttp\b|\bid\b|\bstate\b/i) ??
+    summarizeReportForComment(report, 240);
+
+  const lines = [
+    'BLOCKED',
+    clampLine('Blocked because: ', reason, maxChars),
+    clampLine('Human action required: ', humanAsk, maxChars),
+    clampLine('Evidence: ', evidence, maxChars),
+    'Next action after unblock: I will immediately execute the next concrete step and report results.',
+  ];
+  const body = lines.join('\n');
+  return body.length <= maxChars ? body : `${body.slice(0, maxChars).trimEnd()}...`;
 }
 
 export function shouldQuietPollAfterCarryForward(params: {

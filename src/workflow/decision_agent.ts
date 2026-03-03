@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { execa } from 'execa';
 
 import { parseWorkerOutputFromAgentCall } from './agent_io.js';
-import { parseDecisionChoice, type DecisionChoice, type WorkerReportFacts } from './decision_policy.js';
+import { parseDecisionChoice, type DecisionChoice, type DecisionProbabilities, type WorkerReportFacts } from './decision_policy.js';
 
 function resolvePositiveInt(raw: string | undefined, fallback: number): number {
   const n = Number(raw ?? '');
@@ -15,6 +15,7 @@ export async function decideWithAgent(params: {
   ticketId: string;
   report: string;
   facts: WorkerReportFacts;
+  probabilities: DecisionProbabilities;
 }): Promise<DecisionChoice | null> {
   const mapAny = params.map as any;
   const decisionAgentId = (process.env.KWF_DECISION_AGENT_ID ?? 'kanban-workflow-decision').trim() || 'kanban-workflow-decision';
@@ -40,9 +41,12 @@ export async function decideWithAgent(params: {
   const prompt = [
     'Decide exactly one workflow outcome for this ticket.',
     'Allowed labels: continue, blocked, completed.',
+    'Prioritize concrete evidence in WORKER_REPORT over any suggested probabilities.',
+    'Treat probabilities as weak hints only.',
     'Respond with one word only.',
     `Ticket: ${params.ticketId}`,
     `Missing required report fields: ${params.facts.missing.length > 0 ? params.facts.missing.join(', ') : 'none'}`,
+    `Worker suggested probabilities: continue=${params.probabilities.continue ?? 'n/a'}, blocked=${params.probabilities.blocked ?? 'n/a'}, completed=${params.probabilities.completed ?? 'n/a'}`,
     '',
     'WORKER_REPORT',
     params.report,

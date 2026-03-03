@@ -17,7 +17,9 @@ import {
 import { decideWithAgent } from './workflow/decision_agent.js';
 import {
   coerceDecisionChoice,
+  extractDecisionProbabilities,
   extractWorkerReportFacts,
+  formatBlockedComment,
   shouldQuietPollAfterCarryForward,
   summarizeReportForComment,
 } from './workflow/decision_policy.js';
@@ -512,7 +514,14 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
           facts = extractWorkerReportFacts(report);
         }
 
-        const rawDecision = await decideWithAgent({ map: plan.map, ticketId: action.ticketId, report, facts });
+        const probabilities = extractDecisionProbabilities(report);
+        const rawDecision = await decideWithAgent({
+          map: plan.map,
+          ticketId: action.ticketId,
+          report,
+          facts,
+          probabilities,
+        });
         const decision = coerceDecisionChoice({
           decision: rawDecision,
           facts,
@@ -523,7 +532,7 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
           decision === 'continue'
             ? { kind: 'continue', text: summarizeReportForComment(report, 420) }
             : decision === 'blocked'
-              ? { kind: 'blocked', text: summarizeReportForComment(report, 420) }
+              ? { kind: 'blocked', text: formatBlockedComment(report, facts, 900) }
               : { kind: 'completed', result: summarizeReportForComment(report, 420) };
 
         try {

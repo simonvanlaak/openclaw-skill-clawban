@@ -7,10 +7,12 @@ export function continueCountForTicket(map: SessionMap, ticketId: string): numbe
 }
 
 export function buildRetryPrompt(missing: string[]): string {
+  const missingText = missing.join(', ');
   return [
-    'Your previous report is missing required elements.',
-    `Missing items: ${missing.join(', ')}`,
-    'Reply with markdown report only and include the missing items.',
+    'DECIDER_FOLLOW_UP_QUESTION',
+    `Your previous report is missing: ${missingText}.`,
+    `Can you provide one corrected markdown report that explicitly includes ${missingText}, plus a clear human action if the ticket should be blocked?`,
+    'Reply with markdown report only.',
   ].join('\n');
 }
 

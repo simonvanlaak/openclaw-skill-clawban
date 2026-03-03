@@ -40,7 +40,8 @@ describe('ticket_runtime helpers', () => {
 
   it('formats retry prompt with all missing fields', () => {
     const prompt = buildRetryPrompt(['verification_evidence', 'resolved_blockers']);
-    expect(prompt).toContain('Missing items: verification_evidence, resolved_blockers');
+    expect(prompt).toContain('DECIDER_FOLLOW_UP_QUESTION');
+    expect(prompt).toContain('missing: verification_evidence, resolved_blockers');
     expect(prompt).toContain('Reply with markdown report only');
   });
 

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   coerceDecisionChoice,
+  extractDecisionProbabilities,
   extractWorkerReportFacts,
+  formatBlockedComment,
   parseDecisionChoice,
   shouldQuietPollAfterCarryForward,
   summarizeReportForComment,
@@ -112,5 +114,37 @@ describe('workflow decision policy', () => {
     expect(out).toContain('SSH');
     expect(out).toContain('OPEN');
     expect(out).toContain('Access unavailable');
+  });
+
+  it('extracts optional worker decision probabilities from free-form output', () => {
+    const report = [
+      'Status: did execution and verified current output.',
+      'continue: 55%',
+      'blocked: 0.35',
+      'completed: 10%',
+    ].join('\n');
+
+    expect(extractDecisionProbabilities(report)).toEqual({
+      continue: 0.55,
+      blocked: 0.35,
+      completed: 0.1,
+    });
+  });
+
+  it('formats blocked comments with mandatory human-unblock contract', () => {
+    const report = [
+      'Verification: listed Plane states in two projects.',
+      'Blockers: OPEN cannot hard-delete _DELETED_* states with current API permission.',
+      'Ask: please confirm whether soft-deleted states are acceptable.',
+      'Confidence: 0.8',
+    ].join('\n');
+    const facts = extractWorkerReportFacts(report);
+    const out = formatBlockedComment(report, facts, 900);
+
+    expect(out).toContain('BLOCKED');
+    expect(out).toContain('Blocked because:');
+    expect(out).toContain('Human action required:');
+    expect(out).toContain('Evidence:');
+    expect(out).toContain('Next action after unblock:');
   });
 });
