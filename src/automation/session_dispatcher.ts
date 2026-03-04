@@ -2,6 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { WORKER_RESULT_JSON_SCHEMA_CONTRACT } from '../workflow/worker_result.js';
 
 export const DEFAULT_SESSION_MAP_PATH = '.tmp/kwf-session-map.json';
 
@@ -61,6 +62,7 @@ export type DispatchAction = {
 export type WorkerCommandResult =
   | { kind: 'continue'; text: string }
   | { kind: 'blocked'; text: string }
+  | { kind: 'uncertain'; text: string }
   | { kind: 'completed'; result: string };
 
 type TicketContext = {
@@ -77,9 +79,9 @@ type TicketContext = {
 const WORKER_POLICY_DIGEST = [
   'WORKER_POLICY_DIGEST (resume turn):',
   '- Execute at least one concrete step this turn unless truly blocked.',
-  '- Reply with markdown report only.',
-  '- Required report facts: verification evidence, blockers (open/resolved), uncertainties, confidence (0.0..1.0).',
-  '- If no concrete execution happened, prefer blocked with explicit blocker details.',
+  '- Reply with strict JSON only.',
+  '- Follow WORKER_RESULT_JSON_SCHEMA_CONTRACT exactly.',
+  '- If unsure and clarification is needed, use decision="uncertain" with clarification_questions.',
   '- Keep output concise and evidence-backed; avoid boilerplate.',
 ].join('\n');
 
@@ -292,7 +294,7 @@ export function applyWorkerCommandToSessionMap(
     return map;
   }
 
-  entry.lastState = command.kind;
+  entry.lastState = command.kind === 'uncertain' ? 'blocked' : command.kind;
   if (command.kind === 'completed') {
     entry.closedAt = nowIso;
   } else {
@@ -490,7 +492,7 @@ function buildWorkInstruction(params: {
     `Ticket: ${params.sessionDisplayId} (${params.ticketId})`,
     `Goal: ${context.title ?? 'Continue assigned ticket execution.'}`,
     `Session label: ${params.sessionLabel}`,
-    'Expected output: markdown report for forced decision (continue|blocked|completed).',
+    'Expected output: strict JSON result for forced decision (blocked|completed|uncertain).',
     '',
     'DELTA_SINCE_LAST_TURN',
     delta,
@@ -506,13 +508,11 @@ function buildWorkInstruction(params: {
     '',
     'Execution contract (mandatory):',
     '- Perform at least one concrete execution step this turn (tool call, command, or file/code change), unless truly blocked by external dependency.',
-    '- Respond with a markdown report only (no terminal commands).',
-    '- Include required facts in the report:',
-    '  - verification evidence',
-    '  - blockers with status (open/resolved)',
-    '  - uncertainties',
-    '  - confidence (0.0..1.0)',
+    '- Respond with JSON only (no markdown wrapper, no code fences).',
+    '- Follow the strict schema contract below exactly.',
     '- Do not post boilerplate progress spam. Report only evidence-backed updates.',
+    '',
+    WORKER_RESULT_JSON_SCHEMA_CONTRACT,
     '',
     'CONTEXT_JSON',
     contextJson,

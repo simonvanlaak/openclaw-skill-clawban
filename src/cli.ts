@@ -14,15 +14,7 @@ import {
   saveSessionMap,
   type WorkerCommandResult,
 } from './automation/session_dispatcher.js';
-import { decideWithAgent } from './workflow/decision_agent.js';
-import {
-  coerceDecisionChoice,
-  extractDecisionProbabilities,
-  extractWorkerReportFacts,
-  formatBlockedComment,
-  shouldQuietPollAfterCarryForward,
-  summarizeReportForComment,
-} from './workflow/decision_policy.js';
+import { shouldQuietPollAfterCarryForward } from './workflow/decision_policy.js';
 import {
   maybeSendNoWorkFirstHitAlert,
   type NoWorkAlertResult,
@@ -34,15 +26,19 @@ import {
 import {
   archiveStaleBlockedWorkerSessions,
   buildRetryPrompt,
-  continueCountForTicket,
 } from './workflow/ticket_runtime.js';
+import {
+  formatForcedBlockedComment,
+  formatWorkerResultComment,
+  validateWorkerResult,
+} from './workflow/worker_result.js';
 import {
   dispatchWorkerTurn,
   loadWorkerDelegationState,
   type WorkerRuntimeOptions,
 } from './workflow/worker_runtime.js';
 import { StageKeySchema } from './stage.js';
-import { ask, complete, create, show, start, update } from './verbs/verbs.js';
+import { ask, create, setStage, show, start, update } from './verbs/verbs.js';
 
 export type CliIo = {
   stdout: { write(chunk: string): void };
@@ -484,17 +480,19 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
       let rocketChatStatusUpdate: RocketChatStatusUpdate | null = null;
 
       const applyWorkerOutput = async (action: { sessionId: string; ticketId: string; projectId?: string }, workerOutput: string, detailPrefix?: string): Promise<void> => {
-        let report = workerOutput;
-        let facts = extractWorkerReportFacts(report);
+        let payload = workerOutput;
+        let validation = validateWorkerResult(payload);
+        let retryCount = 0;
 
-        if (facts.missing.length > 0) {
+        while (!validation.ok && retryCount < 2) {
+          retryCount += 1;
           const retry = await dispatchWorkerTurn({
             ticketId: action.ticketId,
             projectId: action.projectId,
             dispatchRunId,
             agentId: WORKER_AGENT_ID,
             sessionId: action.sessionId,
-            text: buildRetryPrompt(facts.missing),
+            text: buildRetryPrompt(validation.errors),
             thinking: 'low',
           }, WORKER_RUNTIME_OPTIONS);
 
@@ -510,64 +508,54 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
             return;
           }
 
-          report = retry.workerOutput;
-          facts = extractWorkerReportFacts(report);
+          payload = retry.workerOutput;
+          validation = validateWorkerResult(payload);
         }
 
-        const probabilities = extractDecisionProbabilities(report);
-        const rawDecision = await decideWithAgent({
-          map: plan.map,
-          ticketId: action.ticketId,
-          report,
-          facts,
-          probabilities,
-        });
-        const decision = coerceDecisionChoice({
-          decision: rawDecision,
-          facts,
-          continueCount: continueCountForTicket(plan.map, action.ticketId),
-        });
+        let parsed: WorkerCommandResult;
+        let detail: string;
 
-        const parsed: WorkerCommandResult =
-          decision === 'continue'
-            ? { kind: 'continue', text: summarizeReportForComment(report, 420) }
-            : decision === 'blocked'
-              ? { kind: 'blocked', text: formatBlockedComment(report, facts, 900) }
-              : { kind: 'completed', result: summarizeReportForComment(report, 420) };
+        if (!validation.ok) {
+          const fallbackText = formatForcedBlockedComment(validation.errors);
+          parsed = { kind: 'blocked', text: fallbackText };
+          detail = `decision=blocked; reason=validation_failed_after_retries; retryCount=${retryCount}; errors=${validation.errors.length}`;
+        } else if (validation.value.decision === 'completed') {
+          const comment = formatWorkerResultComment(validation.value);
+          parsed = { kind: 'completed', result: comment };
+          detail = `decision=completed; retryCount=${retryCount}`;
+        } else if (validation.value.decision === 'uncertain') {
+          const comment = formatWorkerResultComment(validation.value);
+          parsed = { kind: 'uncertain', text: comment };
+          detail = `decision=uncertain; retryCount=${retryCount}`;
+        } else {
+          const comment = formatWorkerResultComment(validation.value);
+          parsed = { kind: 'blocked', text: comment };
+          detail = `decision=blocked; retryCount=${retryCount}`;
+        }
 
         try {
-          if (parsed.kind === 'continue') {
-            await update(adapter, action.ticketId, parsed.text);
-          } else if (parsed.kind === 'blocked') {
-            await ask(adapter, action.ticketId, parsed.text);
+          if (parsed.kind === 'completed') {
+            await update(adapter, action.ticketId, parsed.result);
+            await setStage(adapter, action.ticketId, 'stage:in-review');
           } else {
-            await complete(adapter, action.ticketId, parsed.result);
+            await ask(adapter, action.ticketId, parsed.text);
           }
 
           applyWorkerCommandToSessionMap(plan.map, action.ticketId, parsed, new Date());
-          const evidence = [
-            `report.missing=${facts.missing.length}`,
-            `rawDecision=${rawDecision ?? 'null'}`,
-            `coercedDecision=${decision}`,
-            `hasVerification=${facts.hasVerification}`,
-            `hasResolvedBlockers=${facts.hasResolvedBlockers}`,
-            `hasUncertainties=${facts.hasUncertainties}`,
-            `hasConfidence=${facts.hasConfidence}`,
-          ].join('; ');
           execution.push({
             sessionId: action.sessionId,
             ticketId: action.ticketId,
             parsed,
-            workerOutput: report,
+            workerOutput: payload,
             outcome: 'applied',
-            detail: detailPrefix ? `${detailPrefix}; ${evidence}` : evidence,
+            detail: detailPrefix ? `${detailPrefix}; ${detail}` : detail,
           });
         } catch (err: any) {
           execution.push({
             sessionId: action.sessionId,
             ticketId: action.ticketId,
             parsed,
-            workerOutput: report,
+            workerOutput: payload,
             outcome: 'mutation_error',
             detail: err?.message ?? String(err),
           });

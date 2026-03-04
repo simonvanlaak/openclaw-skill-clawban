@@ -132,7 +132,7 @@ Identity gating:
 
 Worker execution model:
 - Workflow-loop starts worker runs via local OpenClaw agent CLI calls (`openclaw agent`) using explicit `--agent` and per-ticket `--session-id`.
-- Worker executes in isolated session and produces a final Markdown work report.
+- Worker executes in isolated session and produces a final strict JSON work result.
 - Workflow-loop consumes worker result (announce payload and/or transcript), evaluates forced-choice policy, then performs exactly one mutation action.
 - Worker sessions are per-ticket and persistent across ticket pauses/requeues (e.g., blocked -> unblocked resume) so prior ticket-specific context is preserved.
 - Worker session closes/archives when the ticket is completed.
@@ -168,37 +168,35 @@ Action:
 - Auto-heal behavior is enabled.
 - If in-progress state drifts beyond allowed worker limits, automation deterministically keeps the newest in-progress ticket and moves older extra tickets back to `stage:todo` for the same authenticated worker.
 
-### 6.5 Completion/blocked/continue decision policy
+### 6.5 Completion/blocked/uncertain decision policy
 
 - Forced-choice decision policy is required.
-- Decision source is decision-agent output from worker report facts (not worker self-finalization).
-- Worker report format is Markdown (human-readable), not strict JSON.
-- Worker report parsing is flexible (no strict section-header schema required initially).
-- Required report facts:
-  - verification evidence
-  - blockers with status (`open` or `resolved`)
-  - uncertainties
-  - confidence (`0.0` to `1.0`)
+- Decision source is validated worker JSON output (with deterministic fallback handling when invalid).
+- Worker result format is strict JSON (single object), not Markdown.
+- Required decision facts:
+  - decision
+  - completed steps
+  - evidence links/details (`evidence`)
+  - solution summary for completion
+  - blocker resolve requests for blocked outcome
+  - clarification questions for uncertain outcome
 - Decision baseline:
-  - `completed` requires verification evidence and resolved blockers
-  - blockers and uncertainties are required decision signals
-  - decision agent must choose exactly one of: `continue`, `blocked`, `completed`
+  - `completed` requires non-empty `evidence`
+  - `blocked` requires at least one `blocker_resolve_requests` item
+  - `uncertain` requires at least one `clarification_questions` item
+  - worker result must choose exactly one of: `blocked`, `completed`, `uncertain`
 - No-decision prevention:
   - there must never be a no-decision outcome
   - if decision output is missing/invalid/ambiguous, default to `blocked`
-- `confidence` is required telemetry but does not directly gate decision.
 - Workflow-loop applies one mutation per decision and adds a corresponding ticket comment when mutating.
-- If worker report is insufficient/unparseable, workflow-loop performs exactly one in-session retry request specifying missing report elements.
-- If retry output is still insufficient/unparseable, workflow-loop must invoke decision-agent evaluation and then apply one forced-choice decision with default fallback to `blocked`.
+- If worker JSON is invalid/unparseable, workflow-loop performs repair retries according to section 10.4.
+- If retry output is still invalid/unparseable, workflow-loop applies forced fallback decision `blocked`.
 - Worker dispatch metadata must include correlation fields: `ticketId` and `dispatchRunId`.
 - Workflow-loop retry prompt should include missing-items guidance only (no full prior-report echo required).
 - No separate per-run decision artifact file is required; decision context is retained in workflow-loop session history.
 - On failed retry fallback, workflow-loop immediately applies `blocked` when decision output is missing/invalid/ambiguous.
-- If required decision signals remain missing after retry (verification, blockers status, uncertainties, confidence), workflow-loop must coerce any non-`blocked` decision to `blocked`.
-- Per ticket, `continue` is hard-limited to 2 decisions.
-- After 2 `continue` decisions for the same ticket, workflow-loop must only allow `blocked` or `completed`.
-- If decision agent selects `continue` after the cap is reached, workflow-loop must coerce decision to `blocked`.
-- `completed` must be coerced to `blocked` unless verification evidence is present and blockers are explicitly resolved.
+- If required decision signals remain missing after retry (decision, completed steps, and decision-specific required fields), workflow-loop must coerce any non-`blocked` decision to `blocked`.
+- `completed` must be coerced to `blocked` unless `evidence` is present.
 
 ## 7) Scope exclusions
 
@@ -217,6 +215,89 @@ When behavior changes, keep these in sync:
 - `SKILL.md`
 
 ## 9) Notes to revisit later
+
+## 10) Worker result JSON contract and action mapping (finalized, 2026-03-04)
+
+Status: active
+
+### 10.1 Worker response envelope
+
+- Worker final response must be JSON-only.
+- Response must be a single JSON object (no Markdown wrapper, no fenced code block).
+- Backward compatibility mode for legacy Markdown reports is out of scope; hard switch to JSON-only.
+
+### 10.2 Schema and validation
+
+- Validation must be strict:
+  - unknown fields are rejected
+  - missing required fields are rejected
+  - wrong types are rejected
+- Validation happens before any decision-to-action application.
+- Required top-level fields:
+  - `decision`: `blocked` | `completed` | `uncertain`
+  - `completed_steps`: array of strings (always required; minimum 1 item)
+  - `clarification_questions`: array of strings (required when `decision` is `uncertain`; otherwise must be empty)
+  - `blocker_resolve_requests`: array of strings (required when `decision` is `blocked`; otherwise must be empty)
+  - `solution_summary`: string (required when `decision` is `completed`; disallowed for `blocked`/`uncertain`)
+  - `evidence`: array of strings (required when `decision` is `completed`; otherwise must be empty)
+  - all string entries must be at least 20 characters
+  - every array field has a maximum of 5 items
+
+### 10.3 Conditional validity rules
+
+- For `decision: blocked`:
+  - `blocker_resolve_requests` must contain at least one non-empty item
+  - `clarification_questions` must be empty
+  - `solution_summary` is disallowed
+  - `evidence` must be empty
+- For `decision: uncertain`, clarification prompts are required:
+  - `clarification_questions` must contain at least one non-empty question for human response
+  - `blocker_resolve_requests` must be empty
+  - `solution_summary` is disallowed
+  - `evidence` must be empty
+- For `decision: completed`, completion guardrails remain:
+  - must include non-empty `solution_summary`
+  - must include non-empty `evidence`
+  - `clarification_questions` must be empty
+  - `blocker_resolve_requests` must be empty
+  - otherwise coerce decision to `blocked`
+
+### 10.4 Invalid JSON retry policy
+
+- On invalid JSON/schema output, workflow-loop retries up to 2 times.
+- Each retry prompt must include detailed reasons the previous output was invalid.
+- Validation feedback must include all schema errors from the failed payload, not only the first error.
+- Each retry prompt must include the strict JSON schema contract (field/type/constraint definitions), not a filled example payload.
+- If output is still invalid after the third total attempt (initial + 2 retries), force `blocked`.
+
+### 10.5 Decision-to-action mapping
+
+- `blocked`:
+  - post derived comment
+  - move ticket to `stage:blocked`
+- `completed`:
+  - post derived comment
+  - move ticket to `stage:in-review`
+- `uncertain`:
+  - post derived comment that prominently includes clarification questions
+  - move ticket to `stage:blocked`
+
+### 10.6 Comment generation
+
+- Workflow-loop must transform valid worker JSON into a standardized ticket comment format.
+- Raw JSON should not be posted directly as the primary comment payload.
+- Comment formatter is responsible for presenting:
+  - decision
+  - completed steps
+  - solution summary (when present)
+  - evidence (when present)
+  - blocker resolve requests (when present)
+  - clarification questions
+
+### 10.7 Audit/logging
+
+- Persist validation and decision details to runtime logs only.
+- Do not write separate local artifact files for worker decision payloads.
 
 Potential future re-expansion topics (not active now):
 - Re-introducing multi-adapter support

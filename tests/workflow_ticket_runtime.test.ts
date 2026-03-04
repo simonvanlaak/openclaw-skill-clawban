@@ -38,11 +38,16 @@ describe('ticket_runtime helpers', () => {
     expect(continueCountForTicket(map, 'T2')).toBe(0);
   });
 
-  it('formats retry prompt with all missing fields', () => {
-    const prompt = buildRetryPrompt(['verification_evidence', 'resolved_blockers']);
-    expect(prompt).toContain('DECIDER_FOLLOW_UP_QUESTION');
-    expect(prompt).toContain('missing: verification_evidence, resolved_blockers');
-    expect(prompt).toContain('Reply with markdown report only');
+  it('formats retry prompt with all schema errors and strict contract', () => {
+    const prompt = buildRetryPrompt([
+      'decision: invalid enum value',
+      'completed_steps: must contain at least 1 item',
+    ]);
+    expect(prompt).toContain('WORKER_RESULT_JSON_RETRY_REQUEST');
+    expect(prompt).toContain('1. decision: invalid enum value');
+    expect(prompt).toContain('2. completed_steps: must contain at least 1 item');
+    expect(prompt).toContain('WORKER_RESULT_JSON_SCHEMA_CONTRACT');
+    expect(prompt).toContain('Reply with JSON only');
   });
 
   it('archives stale blocked sessions and clears active ticket when needed', () => {

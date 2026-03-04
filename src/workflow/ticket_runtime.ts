@@ -1,4 +1,5 @@
 import type { SessionMap } from '../automation/session_dispatcher.js';
+import { buildWorkerSchemaRetryPrompt } from './worker_result.js';
 
 export function continueCountForTicket(map: SessionMap, ticketId: string): number {
   const entry = (map.sessionsByTicket ?? {})[ticketId] as any;
@@ -6,13 +7,11 @@ export function continueCountForTicket(map: SessionMap, ticketId: string): numbe
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
-export function buildRetryPrompt(missing: string[]): string {
-  const missingText = missing.join(', ');
+export function buildRetryPrompt(errors: string[]): string {
   return [
-    'DECIDER_FOLLOW_UP_QUESTION',
-    `Your previous report is missing: ${missingText}.`,
-    `Can you provide one corrected markdown report that explicitly includes ${missingText}, plus a clear human action if the ticket should be blocked?`,
-    'Reply with markdown report only.',
+    buildWorkerSchemaRetryPrompt(errors),
+    '',
+    'Reply with JSON only.',
   ].join('\n');
 }
 
