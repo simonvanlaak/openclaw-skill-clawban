@@ -6,6 +6,29 @@ export type AgentCallParsed = {
   error?: string;
 };
 
+function readText(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function extractTextFromContentNode(node: unknown): string[] {
+  if (!node || typeof node !== 'object') return [];
+  const item = node as Record<string, unknown>;
+  const direct = [readText(item.text), readText(item.output_text)].filter((v) => v.trim().length > 0);
+  if (direct.length > 0) return direct;
+
+  const nested = item.content;
+  if (!Array.isArray(nested)) return [];
+  return nested.flatMap((entry) => extractTextFromContentNode(entry));
+}
+
+function extractTextFromPayloads(payloads: unknown[]): string {
+  return payloads
+    .flatMap((payload) => extractTextFromContentNode(payload))
+    .filter((text) => text.trim().length > 0)
+    .join('\n')
+    .trim();
+}
+
 export function parseWorkerOutputFromAgentCall(stdoutRaw: unknown, stderrRaw: unknown): AgentCallParsed {
   const raw = String(stdoutRaw ?? '').trim();
   const stderr = String(stderrRaw ?? '').trim();
@@ -26,11 +49,12 @@ export function parseWorkerOutputFromAgentCall(stdoutRaw: unknown, stderrRaw: un
         `agent status=${status}`;
       error = String(msg);
     }
-    const payloads: any[] = Array.isArray(parsed?.result?.payloads) ? parsed.result.payloads : [];
-    const asText = payloads
-      .map((p) => (typeof p?.text === 'string' ? p.text : ''))
-      .filter((x) => x.trim().length > 0)
-      .join('\n');
+    const payloads: unknown[] = Array.isArray(parsed?.result?.payloads)
+      ? parsed.result.payloads
+      : Array.isArray(parsed?.payloads)
+        ? parsed.payloads
+        : [];
+    const asText = extractTextFromPayloads(payloads);
     if (asText.trim()) workerOutput = asText;
   } catch {
     // fallback to raw stdout
