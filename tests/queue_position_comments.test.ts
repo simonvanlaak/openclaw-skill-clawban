@@ -26,7 +26,6 @@ describe('queue_position_comments', () => {
     map.active = { ticketId: 'ACTIVE-1', sessionId: 'active-1' };
     const result = await reconcileQueuePositionComments({
       adapter: {
-        whoami: async () => ({ id: 'me' }),
         listBacklogIdsInOrder: async () => ['T-1', 'T-2'],
         listComments: async (id: string) => commentStore.get(id) ?? [],
         addComment,
@@ -60,7 +59,6 @@ describe('queue_position_comments', () => {
 
     const result = await reconcileQueuePositionComments({
       adapter: {
-        whoami: async () => ({ id: 'me' }),
         listBacklogIdsInOrder: async () => ['T2'],
         listComments: async () => [],
         addComment: vi.fn(async () => undefined),
@@ -91,7 +89,6 @@ describe('queue_position_comments', () => {
 
     const result = await reconcileQueuePositionComments({
       adapter: {
-        whoami: async () => ({ id: 'me' }),
         listBacklogIdsInOrder: async () => ['T1'],
         listComments: async () => [],
         addComment,
@@ -118,7 +115,6 @@ describe('queue_position_comments', () => {
 
     const result = await reconcileQueuePositionComments({
       adapter: {
-        whoami: async () => ({ id: 'me' }),
         listBacklogIdsInOrder: async () => ['T1'],
         listComments: async () => [],
         addComment: vi.fn(async () => undefined),
@@ -150,7 +146,6 @@ describe('queue_position_comments', () => {
 
     await reconcileQueuePositionComments({
       adapter: {
-        whoami: async () => ({ id: 'me' }),
         listBacklogIdsInOrder: async () => ['T-1'],
         listComments: async () => [],
         addComment,
@@ -165,5 +160,113 @@ describe('queue_position_comments', () => {
       'T-1',
       expect.stringContaining('There are 1 tickets with higher priority that I need to complete (<4h)'),
     );
+  });
+
+  it('updates newest queue comment and deletes duplicate queue comments', async () => {
+    const updateComment = vi.fn(async () => undefined);
+    const deleteComment = vi.fn(async () => undefined);
+
+    const map = mapWithQueueState();
+    map.active = { ticketId: 'ACTIVE-1', sessionId: 'active-1' };
+    const ticketId = 'T-1';
+    const comments = [
+      {
+        id: 'newest',
+        body: 'There are 1 tickets with higher priority that I need to complete (<1h) before this ticket can be started. If this is urgent, change the priority.',
+      },
+      {
+        id: 'older',
+        body: 'There are 2 tickets with higher priority that I need to complete (<1h) before this ticket can be started. If this is urgent, change the priority.',
+      },
+    ];
+
+    const result = await reconcileQueuePositionComments({
+      adapter: {
+        listBacklogIdsInOrder: async () => [ticketId],
+        listComments: async () => comments,
+        addComment: vi.fn(async () => undefined),
+        updateComment,
+        deleteComment,
+      },
+      map,
+      dryRun: false,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.updated).toBe(0);
+    expect(result.deleted).toBe(1);
+    expect(updateComment).not.toHaveBeenCalled();
+    expect(deleteComment).toHaveBeenCalledWith(ticketId, 'older');
+    expect(map.queuePosition?.commentsByTicket[ticketId]?.commentId).toBe('newest');
+  });
+
+  it('does not keep queue comment for next ticket with zero higher-priority items', async () => {
+    const addComment = vi.fn(async () => undefined);
+    const deleteComment = vi.fn(async () => undefined);
+    const ticketId = 'T-1';
+    const map = mapWithQueueState();
+    map.queuePosition!.commentsByTicket[ticketId] = { commentId: 'tracked-c', higherPriorityCount: 1 };
+
+    const result = await reconcileQueuePositionComments({
+      adapter: {
+        listBacklogIdsInOrder: async () => [ticketId],
+        listComments: async () => [
+          {
+            id: 'tracked-c',
+            body: 'There are 1 tickets with higher priority that I need to complete (<1h) before this ticket can be started. If this is urgent, change the priority.',
+          },
+        ],
+        addComment,
+        updateComment: vi.fn(async () => undefined),
+        deleteComment,
+      },
+      map,
+      dryRun: false,
+    });
+
+    expect(result.created).toBe(0);
+    expect(addComment).not.toHaveBeenCalled();
+    expect(deleteComment).toHaveBeenCalledWith(ticketId, 'tracked-c');
+    expect(map.queuePosition?.commentsByTicket[ticketId]).toBeUndefined();
+  });
+
+  it('deletes duplicate queue comments even when tracked comment id exists', async () => {
+    const updateComment = vi.fn(async () => undefined);
+    const deleteComment = vi.fn(async () => undefined);
+    const ticketId = 'T-1';
+    const map = mapWithQueueState();
+    map.active = { ticketId: 'ACTIVE-1', sessionId: 'active-1' };
+    map.queuePosition!.commentsByTicket[ticketId] = {
+      commentId: 'tracked',
+      higherPriorityCount: 1,
+      templateVersion: 2,
+    };
+
+    const result = await reconcileQueuePositionComments({
+      adapter: {
+        listBacklogIdsInOrder: async () => [ticketId],
+        listComments: async () => [
+          {
+            id: 'tracked',
+            body: 'There are 1 tickets with higher priority that I need to complete (<1h) before this ticket can be started. If this is urgent, change the priority.',
+          },
+          {
+            id: 'duplicate-old',
+            body: 'There are 0 tickets with higher priority that I need to complete (<1h) before this ticket can be started. If this is urgent, change the priority.',
+          },
+        ],
+        addComment: vi.fn(async () => undefined),
+        updateComment,
+        deleteComment,
+      },
+      map,
+      dryRun: false,
+    });
+
+    expect(result.deleted).toBe(1);
+    expect(result.updated).toBe(0);
+    expect(result.unchanged).toBe(1);
+    expect(deleteComment).toHaveBeenCalledWith(ticketId, 'duplicate-old');
+    expect(updateComment).not.toHaveBeenCalled();
   });
 });

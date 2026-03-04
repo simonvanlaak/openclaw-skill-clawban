@@ -35,26 +35,11 @@ function normalizeText(text: string | undefined): string {
   return String(text ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-function actorKeys(actor: { id?: string; username?: string; name?: string } | undefined): string[] {
-  if (!actor) return [];
-  return [actor.id, actor.username, actor.name]
-    .map((value) => normalizeText(value))
-    .filter((value) => value.length > 0);
-}
-
-function isDispatcherOwnedComment(
-  comment: { body: string; author?: { id?: string; username?: string; name?: string } },
-  me: { id?: string; username?: string; name?: string },
-): boolean {
+function isQueueManagedComment(comment: { body: string; author?: { id?: string; username?: string; name?: string } }): boolean {
   const body = String(comment.body ?? '');
   const hasLegacyMarker = body.includes(LEGACY_QUEUE_MARKER);
   const hasQueueTemplate = body.startsWith(QUEUE_TEXT_PREFIX) && body.includes(QUEUE_TEXT_MIDDLE) && body.endsWith(QUEUE_TEXT_SUFFIX);
-  if (!hasLegacyMarker && !hasQueueTemplate) return false;
-  const meKeys = new Set(actorKeys(me));
-  if (meKeys.size === 0) return false;
-  const author = actorKeys(comment.author);
-  if (author.length === 0) return false;
-  return author.some((key) => meKeys.has(key));
+  return hasLegacyMarker || hasQueueTemplate;
 }
 
 export type QueuePositionReconcileResult = {
@@ -69,7 +54,6 @@ export type QueuePositionReconcileResult = {
 };
 
 type QueueCommentAdapter = {
-  whoami(): Promise<{ id?: string; username?: string; name?: string }>;
   listBacklogIdsInOrder(): Promise<string[]>;
   listComments(
     id: string,
@@ -103,50 +87,134 @@ export async function reconcileQueuePositionComments(params: {
   const trackedIds = Object.keys(commentsByTicket);
   const activeOffset = params.map.active?.ticketId ? 1 : 0;
   const averageDurationMs = averageDurationMsFromRecentSamples(state.recentCompletionDurationsMs);
-  const me = await params.adapter.whoami();
-
   for (const ticketId of trackedIds) {
     if (queueSet.has(ticketId)) continue;
-    const commentId = commentsByTicket[ticketId]?.commentId;
-    if (!commentId) {
+    const trackedCommentId = commentsByTicket[ticketId]?.commentId;
+    if (!trackedCommentId) {
       delete commentsByTicket[ticketId];
       continue;
     }
     if (params.dryRun) continue;
     try {
-      await params.adapter.deleteComment(ticketId, commentId);
+      const comments = await params.adapter.listComments(ticketId, {
+        limit: 100,
+        newestFirst: true,
+        includeInternal: true,
+      });
+      const queueManaged = comments.filter((comment) => isQueueManagedComment(comment));
+      const ids = queueManaged.length > 0 ? queueManaged.map((comment) => comment.id) : [trackedCommentId];
+      for (const id of ids) {
+        await params.adapter.deleteComment(ticketId, id);
+        deleted += 1;
+      }
       delete commentsByTicket[ticketId];
-      deleted += 1;
     } catch (error: any) {
-      errors.push(`delete ${ticketId}/${commentId}: ${error?.message ?? String(error)}`);
+      errors.push(`delete ${ticketId}/${trackedCommentId}: ${error?.message ?? String(error)}`);
     }
   }
 
   for (let index = 0; index < queueTicketIds.length; index++) {
     const ticketId = queueTicketIds[index]!;
     const higherPriorityCount = index + activeOffset;
+    if (higherPriorityCount === 0) {
+      const trackedCommentId = commentsByTicket[ticketId]?.commentId;
+      if (trackedCommentId && !params.dryRun) {
+        try {
+          await params.adapter.deleteComment(ticketId, trackedCommentId);
+          deleted += 1;
+        } catch (error: any) {
+          errors.push(`delete ${ticketId}/${trackedCommentId}: ${error?.message ?? String(error)}`);
+        }
+      }
+
+      // Also clean up any queue-managed leftovers for this ticket (legacy or duplicates).
+      if (!params.dryRun) {
+        try {
+          const comments = await params.adapter.listComments(ticketId, {
+            limit: 100,
+            newestFirst: true,
+            includeInternal: true,
+          });
+          for (const comment of comments) {
+            if (!isQueueManagedComment(comment)) continue;
+            if (trackedCommentId && comment.id === trackedCommentId) continue;
+            try {
+              await params.adapter.deleteComment(ticketId, comment.id);
+              deleted += 1;
+            } catch (error: any) {
+              errors.push(`delete-zero ${ticketId}/${comment.id}: ${error?.message ?? String(error)}`);
+            }
+          }
+        } catch (error: any) {
+          errors.push(`listComments-zero ${ticketId}: ${error?.message ?? String(error)}`);
+        }
+      }
+
+      delete commentsByTicket[ticketId];
+      continue;
+    }
+
     const desiredBody = renderQueueComment(higherPriorityCount, averageDurationMs);
     const entry = commentsByTicket[ticketId];
 
     if (entry?.commentId) {
+      let commentIdToUse = entry.commentId;
+      let existingBody: string | undefined;
+      try {
+        const comments = await params.adapter.listComments(ticketId, {
+          limit: 100,
+          newestFirst: true,
+          includeInternal: true,
+        });
+        const queueManaged = comments.filter((comment) => isQueueManagedComment(comment));
+        if (queueManaged.length > 0) {
+          const tracked = queueManaged.find((comment) => comment.id === entry.commentId);
+          const chosen = tracked ?? queueManaged[0];
+          if (chosen) {
+            commentIdToUse = chosen.id;
+            existingBody = chosen.body;
+          }
+          if (!params.dryRun) {
+            for (const duplicate of queueManaged) {
+              if (duplicate.id === commentIdToUse) continue;
+              try {
+                await params.adapter.deleteComment(ticketId, duplicate.id);
+                deleted += 1;
+              } catch (error: any) {
+                errors.push(`delete-duplicate ${ticketId}/${duplicate.id}: ${error?.message ?? String(error)}`);
+              }
+            }
+          }
+        }
+      } catch (error: any) {
+        errors.push(`listComments ${ticketId}: ${error?.message ?? String(error)}`);
+      }
+
       const needsTemplateUpgrade = Number(entry.templateVersion ?? 0) < QUEUE_COMMENT_TEMPLATE_VERSION;
-      if (entry.higherPriorityCount === higherPriorityCount && !needsTemplateUpgrade) {
+      const bodyMatches = normalizeText(existingBody) === normalizeText(desiredBody);
+      if (entry.higherPriorityCount === higherPriorityCount && !needsTemplateUpgrade && bodyMatches) {
+        commentsByTicket[ticketId] = {
+          commentId: commentIdToUse,
+          higherPriorityCount,
+          templateVersion: QUEUE_COMMENT_TEMPLATE_VERSION,
+          lastSeenAt: new Date().toISOString(),
+        };
         unchanged += 1;
         continue;
       }
 
       if (params.dryRun) continue;
       try {
-        await params.adapter.updateComment(ticketId, entry.commentId, desiredBody);
+        await params.adapter.updateComment(ticketId, commentIdToUse, desiredBody);
         commentsByTicket[ticketId] = {
-          commentId: entry.commentId,
+          commentId: commentIdToUse,
           higherPriorityCount,
           templateVersion: QUEUE_COMMENT_TEMPLATE_VERSION,
           lastSeenAt: new Date().toISOString(),
         };
         updated += 1;
       } catch (error: any) {
-        errors.push(`update ${ticketId}/${entry.commentId}: ${error?.message ?? String(error)}`);
+        errors.push(`update ${ticketId}/${commentIdToUse}: ${error?.message ?? String(error)}`);
       }
       continue;
     }
@@ -158,16 +226,32 @@ export async function reconcileQueuePositionComments(params: {
           author?: { id?: string; username?: string; name?: string };
         }
       | undefined;
+    let duplicateComments: Array<{ id: string }> = [];
     try {
       const comments = await params.adapter.listComments(ticketId, {
         limit: 100,
         newestFirst: true,
         includeInternal: true,
       });
-      existingComment = comments.find((comment) => isDispatcherOwnedComment(comment, me));
+      const queueManagedComments = comments.filter((comment) => isQueueManagedComment(comment));
+      if (queueManagedComments.length > 0) {
+        existingComment = queueManagedComments[0];
+        duplicateComments = queueManagedComments.slice(1).map((comment) => ({ id: comment.id }));
+      }
     } catch (error: any) {
       errors.push(`listComments ${ticketId}: ${error?.message ?? String(error)}`);
       continue;
+    }
+
+    if (!params.dryRun && duplicateComments.length > 0) {
+      for (const duplicate of duplicateComments) {
+        try {
+          await params.adapter.deleteComment(ticketId, duplicate.id);
+          deleted += 1;
+        } catch (error: any) {
+          errors.push(`delete-duplicate ${ticketId}/${duplicate.id}: ${error?.message ?? String(error)}`);
+        }
+      }
     }
 
     if (existingComment) {
@@ -207,7 +291,7 @@ export async function reconcileQueuePositionComments(params: {
         newestFirst: true,
         includeInternal: true,
       });
-      const createdComment = comments.find((comment) => isDispatcherOwnedComment(comment, me));
+      const createdComment = comments.find((comment) => isQueueManagedComment(comment));
       if (!createdComment) {
         errors.push(`create ${ticketId}: comment created but marker lookup failed`);
         continue;

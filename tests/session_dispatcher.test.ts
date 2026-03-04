@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { applyWorkerCommandToSessionMap, buildWorkflowLoopPlan } from '../src/automation/session_dispatcher.js';
 
 describe('session workflow-loop', () => {
-  it('reuses same session for same in_progress ticket, then finalizes and starts new session on completion', () => {
+  it('reuses same session for same in_progress ticket, then starts a new session on completion', () => {
     const t1 = new Date('2026-02-28T13:00:00.000Z');
     const initialMap = { version: 1 as const, sessionsByTicket: {} };
 
@@ -21,7 +21,12 @@ describe('session workflow-loop', () => {
             attachments: [{ name: 'trace.log', url: 'https://files/trace.log' }],
             linked: [{ id: 'BUG-77', title: 'Root cause', url: 'https://tracker/BUG-77' }],
           },
-          comments: [{ body: 'Latest update', author: 'jules' }],
+          comments: [
+            {
+              body: 'Latest update',
+              author: { id: 'c0fdab2d-5858-4ff6-b17e-05770f0776b6', name: 'Simon van Laak' },
+            },
+          ],
         },
         instruction: 'Continue working on this ticket now.',
       },
@@ -42,6 +47,8 @@ describe('session workflow-loop', () => {
     expect(first.actions[0]?.text).toContain('"title": "Fix login race"');
     expect(first.actions[0]?.text).toContain('"attachments"');
     expect(first.actions[0]?.text).toContain('"links"');
+    expect(first.actions[0]?.text).toContain('"authorId": "c0fdab2d-5858-4ff6-b17e-05770f0776b6"');
+    expect(first.actions[0]?.text).toContain('"authorName": "Simon van Laak"');
     const a1Session = first.actions[0]!.sessionId;
 
     const second = buildWorkflowLoopPlan({
@@ -63,11 +70,10 @@ describe('session workflow-loop', () => {
       },
     });
 
-    expect(third.actions).toHaveLength(2);
-    expect(third.actions[0]).toMatchObject({ kind: 'finalize', ticketId: 'A1', sessionId: a1Session });
-    expect(third.actions[1]).toMatchObject({ kind: 'work', ticketId: 'B2' });
-    expect(third.actions[1]?.text).toContain('Ticket: B2 (B2)');
-    expect(third.actions[1]?.sessionId).not.toBe(a1Session);
+    expect(third.actions).toHaveLength(1);
+    expect(third.actions[0]).toMatchObject({ kind: 'work', ticketId: 'B2' });
+    expect(third.actions[0]?.text).toContain('Ticket: B2 (B2)');
+    expect(third.actions[0]?.sessionId).not.toBe(a1Session);
     expect(third.map.active?.ticketId).toBe('B2');
     expect(third.map.sessionsByTicket.A1?.closedAt).toBeTruthy();
   });
@@ -97,7 +103,7 @@ describe('session workflow-loop', () => {
     expect(second.actions[0]?.text).toContain('Session label: A1 New title after grooming');
   });
 
-  it('uses linked human-readable issue keys for worker session id + label', () => {
+  it('uses ticket id for worker session id + label even when linked issue key exists', () => {
     const plan = buildWorkflowLoopPlan({
       previousMap: { version: 1 as const, sessionsByTicket: {} },
       now: new Date('2026-02-28T14:10:00.000Z'),
@@ -114,12 +120,12 @@ describe('session workflow-loop', () => {
       },
     });
 
-    expect(plan.actions[0]?.sessionId).toBe('jules-177');
-    expect(plan.actions[0]?.sessionLabel).toBe('JULES-177 Improve kwf worker session naming');
-    expect(plan.actions[0]?.text).toContain('Session label: JULES-177 Improve kwf worker session naming');
+    expect(plan.actions[0]?.sessionId).toBe('45a8585d-9075-44de-bcd2-196e6793979a');
+    expect(plan.actions[0]?.sessionLabel).toBe('45a8585d-9075-44de-bcd2-196e6793979a Improve kwf worker session naming');
+    expect(plan.actions[0]?.text).toContain('Session label: 45a8585d-9075-44de-bcd2-196e6793979a Improve kwf worker session naming');
   });
 
-  it('extracts issue keys from top-level links when adapter emits links outside item.linked', () => {
+  it('ignores top-level issue keys for session id and keeps ticket id', () => {
     const plan = buildWorkflowLoopPlan({
       previousMap: { version: 1 as const, sessionsByTicket: {} },
       now: new Date('2026-02-28T14:11:00.000Z'),
@@ -136,11 +142,11 @@ describe('session workflow-loop', () => {
       },
     });
 
-    expect(plan.actions[0]?.sessionId).toBe('jules-177');
-    expect(plan.actions[0]?.sessionLabel).toBe('JULES-177 Improve kwf worker session naming');
+    expect(plan.actions[0]?.sessionId).toBe('45a8585d-9075-44de-bcd2-196e6793979a');
+    expect(plan.actions[0]?.sessionLabel).toBe('45a8585d-9075-44de-bcd2-196e6793979a Improve kwf worker session naming');
   });
 
-  it('upgrades legacy worker session ids to human-readable keys when available', () => {
+  it('upgrades legacy worker session ids to per-ticket ids', () => {
     const plan = buildWorkflowLoopPlan({
       previousMap: {
         version: 1 as const,
@@ -170,9 +176,9 @@ describe('session workflow-loop', () => {
       },
     });
 
-    expect(plan.actions[0]?.sessionId).toBe('jules-177');
-    expect(plan.map.active?.sessionId).toBe('jules-177');
-    expect(plan.map.sessionsByTicket['45a8585d-9075-44de-bcd2-196e6793979a']?.sessionId).toBe('jules-177');
+    expect(plan.actions[0]?.sessionId).toBe('45a8585d-9075-44de-bcd2-196e6793979a');
+    expect(plan.map.active?.sessionId).toBe('45a8585d-9075-44de-bcd2-196e6793979a');
+    expect(plan.map.sessionsByTicket['45a8585d-9075-44de-bcd2-196e6793979a']?.sessionId).toBe('45a8585d-9075-44de-bcd2-196e6793979a');
   });
 
   it('treats main/default sessions as legacy and upgrades to per-ticket key sessions', () => {
@@ -205,8 +211,8 @@ describe('session workflow-loop', () => {
       },
     });
 
-    expect(fromMain.actions[0]?.sessionId).toBe('jules-177');
-    expect(fromMain.map.active?.sessionId).toBe('jules-177');
+    expect(fromMain.actions[0]?.sessionId).toBe('45a8585d-9075-44de-bcd2-196e6793979a');
+    expect(fromMain.map.active?.sessionId).toBe('45a8585d-9075-44de-bcd2-196e6793979a');
 
     const fromDefault = buildWorkflowLoopPlan({
       previousMap: {
@@ -237,11 +243,75 @@ describe('session workflow-loop', () => {
       },
     });
 
-    expect(fromDefault.actions[0]?.sessionId).toBe('jules-177');
-    expect(fromDefault.map.active?.sessionId).toBe('jules-177');
+    expect(fromDefault.actions[0]?.sessionId).toBe('45a8585d-9075-44de-bcd2-196e6793979a');
+    expect(fromDefault.map.active?.sessionId).toBe('45a8585d-9075-44de-bcd2-196e6793979a');
   });
 
-  it('switches ticket on blocked transition with finalize + new work action', () => {
+  it('upgrades legacy main session ids for opaque ticket ids without issue key', () => {
+    const ticketId = 'a4a5f975-c2fb-4c6b-b6a6-152e13285e98';
+    const plan = buildWorkflowLoopPlan({
+      previousMap: {
+        version: 1 as const,
+        active: {
+          ticketId,
+          sessionId: 'main',
+        },
+        sessionsByTicket: {
+          [ticketId]: {
+            sessionId: 'main',
+            lastState: 'in_progress' as const,
+            lastSeenAt: '2026-03-04T15:00:00.000Z',
+          },
+        },
+      },
+      now: new Date('2026-03-04T15:10:00.000Z'),
+      autopilotOutput: {
+        tick: { kind: 'in_progress', id: ticketId, inProgressIds: [ticketId] },
+        nextTicket: {
+          kind: 'item',
+          item: {
+            id: ticketId,
+            title: 'Clean up plane project states and merge legacy variants',
+          },
+        },
+      },
+    });
+
+    expect(plan.actions[0]?.sessionId).toBe(ticketId);
+    expect(plan.map.active?.sessionId).toBe(ticketId);
+    expect(plan.map.sessionsByTicket[ticketId]?.sessionId).toBe(ticketId);
+  });
+
+  it('upgrades legacy active main session id even when session entry is missing', () => {
+    const ticketId = '210100ab-1364-42b1-8a46-af495a2d0230';
+    const plan = buildWorkflowLoopPlan({
+      previousMap: {
+        version: 1 as const,
+        active: {
+          ticketId,
+          sessionId: 'main',
+        },
+        sessionsByTicket: {},
+      },
+      now: new Date('2026-03-04T15:20:00.000Z'),
+      autopilotOutput: {
+        tick: { kind: 'in_progress', id: ticketId, inProgressIds: [ticketId] },
+        nextTicket: {
+          kind: 'item',
+          item: {
+            id: ticketId,
+            title: 'Fix Rocket.Chat typing indicator reliability',
+          },
+        },
+      },
+    });
+
+    expect(plan.actions[0]?.sessionId).toBe(ticketId);
+    expect(plan.map.active?.sessionId).toBe(ticketId);
+    expect(plan.map.sessionsByTicket[ticketId]?.sessionId).toBe(ticketId);
+  });
+
+  it('switches ticket on blocked transition with a new work action', () => {
     const seededMap = {
       version: 1 as const,
       active: { ticketId: 'A1', sessionId: 'kwf-A1-1' },
@@ -259,9 +329,8 @@ describe('session workflow-loop', () => {
       },
     });
 
-    expect(plan.actions[0]).toMatchObject({ kind: 'finalize', ticketId: 'A1', sessionId: 'kwf-A1-1' });
-    expect(plan.actions[1]).toMatchObject({ kind: 'work', ticketId: 'C3' });
-    expect(plan.actions[1]?.text).toContain('"title": "Unblock deploy"');
+    expect(plan.actions[0]).toMatchObject({ kind: 'work', ticketId: 'C3' });
+    expect(plan.actions[0]?.text).toContain('"title": "Unblock deploy"');
     expect(plan.map.active?.ticketId).toBe('C3');
   });
 

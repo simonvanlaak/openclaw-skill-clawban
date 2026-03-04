@@ -57,7 +57,7 @@ export type SessionMap = {
 };
 
 export type DispatchAction = {
-  kind: 'work' | 'finalize';
+  kind: 'work';
   sessionId: string;
   sessionLabel?: string;
   ticketId: string;
@@ -77,7 +77,7 @@ type TicketContext = {
   title?: string;
   body?: string;
   url?: string;
-  comments: Array<{ at?: string; author?: string; body?: string; internal?: boolean }>;
+  comments: Array<{ at?: string; author?: string; authorId?: string; authorName?: string; body?: string; internal?: boolean }>;
   attachments: Array<{ name?: string; url?: string }>;
   links: Array<{ id?: string; title?: string; url?: string; relation?: string }>;
 };
@@ -156,7 +156,7 @@ export async function loadSessionMap(path = DEFAULT_SESSION_MAP_PATH): Promise<S
           }
         : undefined;
 
-    return {
+    const map: SessionMap = {
       version: 1,
       active:
         parsed.active && typeof parsed.active.ticketId === 'string' && typeof parsed.active.sessionId === 'string'
@@ -167,6 +167,35 @@ export async function loadSessionMap(path = DEFAULT_SESSION_MAP_PATH): Promise<S
       rocketChatStatus,
       sessionsByTicket,
     };
+
+    // One-time migration on load:
+    // rewrite legacy worker session ids (main/default/old prefixes) to deterministic per-ticket ids.
+    for (const [ticketId, entry] of Object.entries(map.sessionsByTicket ?? {})) {
+      if (!entry || typeof entry !== 'object') continue;
+      const currentSessionId = String((entry as any).sessionId ?? '').trim();
+      if (!currentSessionId) continue;
+      if (!looksLegacyWorkerSessionId(currentSessionId)) continue;
+      const migrated = sanitizeSessionToken(ticketId);
+      if (!migrated) continue;
+      (entry as any).sessionId = migrated;
+      if (map.active?.ticketId === ticketId) {
+        map.active = { ticketId, sessionId: migrated };
+      }
+    }
+
+    // Also normalize active if it still points to a legacy id and ticket is known.
+    if (map.active?.ticketId && looksLegacyWorkerSessionId(map.active.sessionId)) {
+      const fallback = sanitizeSessionToken(map.active.ticketId);
+      if (fallback) {
+        map.active = { ticketId: map.active.ticketId, sessionId: fallback };
+        const activeEntry = map.sessionsByTicket[map.active.ticketId] as any;
+        if (activeEntry && typeof activeEntry === 'object') {
+          activeEntry.sessionId = fallback;
+        }
+      }
+    }
+
+    return map;
   } catch {
     return emptyMap();
   }
@@ -242,7 +271,7 @@ function ensureSessionForTicket(
   sessionDisplayId?: string,
 ): { sessionId: string; sessionLabel: string; reused: boolean } {
   const existing = map.sessionsByTicket[ticketId];
-  const effectiveDisplayId = sessionDisplayId || ticketId;
+  const effectiveDisplayId = ticketId;
   const preferredSessionId = makeSessionId(ticketId, new Date(nowIso), ticketTitle, effectiveDisplayId);
   const sessionLabel = ticketTitle
     ? makeSessionLabel(effectiveDisplayId, ticketTitle)
@@ -254,8 +283,7 @@ function ensureSessionForTicket(
     const shouldUpgradeLegacyId =
       preferredSessionId !== sessionId &&
       looksLegacyWorkerSessionId(sessionId) &&
-      !!sanitizeSessionToken(effectiveDisplayId) &&
-      !!extractIssueKey(effectiveDisplayId);
+      !!sanitizeSessionToken(effectiveDisplayId);
 
     if (shouldUpgradeLegacyId) {
       sessionId = preferredSessionId;
@@ -274,9 +302,31 @@ function ensureSessionForTicket(
 
   const active = map.active;
   if (active && active.ticketId === ticketId) {
+    const shouldUpgradeActiveLegacyId =
+      preferredSessionId !== active.sessionId &&
+      looksLegacyWorkerSessionId(active.sessionId) &&
+      !!sanitizeSessionToken(effectiveDisplayId);
+    const resolvedActiveSessionId = shouldUpgradeActiveLegacyId ? preferredSessionId : active.sessionId;
+    map.active = { ticketId, sessionId: resolvedActiveSessionId };
+
     const activeEntry = map.sessionsByTicket[ticketId];
-    if (activeEntry) activeEntry.sessionLabel = sessionLabel;
-    return { sessionId: active.sessionId, sessionLabel, reused: true };
+    if (activeEntry) {
+      activeEntry.sessionLabel = sessionLabel;
+      activeEntry.sessionId = resolvedActiveSessionId;
+      activeEntry.lastState = 'in_progress';
+      activeEntry.lastSeenAt = nowIso;
+      if (!activeEntry.workStartedAt) activeEntry.workStartedAt = nowIso;
+      return { sessionId: resolvedActiveSessionId, sessionLabel, reused: !shouldUpgradeActiveLegacyId };
+    }
+
+    map.sessionsByTicket[ticketId] = {
+      sessionId: resolvedActiveSessionId,
+      sessionLabel,
+      lastState: 'in_progress',
+      lastSeenAt: nowIso,
+      workStartedAt: nowIso,
+    };
+    return { sessionId: resolvedActiveSessionId, sessionLabel, reused: !shouldUpgradeActiveLegacyId };
   }
 
   const sessionId = preferredSessionId;
@@ -340,30 +390,38 @@ export function applyWorkerCommandToSessionMap(
   return map;
 }
 
-function normalizeCommentAuthor(author: unknown): string | undefined {
+function normalizeCommentAuthor(author: unknown): { id?: string; name?: string } | undefined {
   if (author == null) return undefined;
-  if (typeof author === 'string') return author;
+  if (typeof author === 'string') {
+    const value = author.trim();
+    if (!value) return undefined;
+    return { id: value, name: value };
+  }
 
   if (typeof author === 'object') {
     const a = author as Record<string, unknown>;
-    const candidates = [a.display_name, a.displayName, a.name, a.username, a.email, a.id];
-    for (const c of candidates) {
-      if (typeof c === 'string' && c.trim()) return c.trim();
-    }
+    const idCandidates = [a.id, a.user_id, a.userId];
+    const nameCandidates = [a.display_name, a.displayName, a.name, a.username, a.email];
+    const nested = a.member && typeof a.member === 'object' ? (a.member as Record<string, unknown>) : undefined;
+    const nestedIdCandidates = nested ? [nested.id, nested.user_id, nested.userId] : [];
+    const nestedNameCandidates = nested ? [nested.display_name, nested.displayName, nested.name, nested.username, nested.email] : [];
 
-    const nested = a.member;
-    if (nested && typeof nested === 'object') {
-      const n = nested as Record<string, unknown>;
-      const nestedCandidates = [n.display_name, n.displayName, n.name, n.username, n.email, n.id];
-      for (const c of nestedCandidates) {
-        if (typeof c === 'string' && c.trim()) return c.trim();
+    const firstText = (values: unknown[]): string | undefined => {
+      for (const value of values) {
+        if (typeof value === 'string' && value.trim()) return value.trim();
       }
-    }
+      return undefined;
+    };
 
-    return JSON.stringify(a);
+    const id = firstText([...idCandidates, ...nestedIdCandidates]);
+    const name = firstText([...nameCandidates, ...nestedNameCandidates, ...idCandidates, ...nestedIdCandidates]);
+    if (id || name) return { id, name };
+    return { name: JSON.stringify(a) };
   }
 
-  return String(author);
+  const fallback = String(author).trim();
+  if (!fallback) return undefined;
+  return { id: fallback, name: fallback };
 }
 
 function extractIssueKeyLinks(text: string | undefined): Array<{ title: string; relation: string }> {
@@ -390,12 +448,17 @@ function extractTicketContext(payload: any, fallbackTicketId: string): TicketCon
     ...(Array.isArray(payload?.links) ? payload.links : []),
   ];
 
-  const comments = commentsRaw.map((c) => ({
+  const comments = commentsRaw.map((c) => {
+    const author = normalizeCommentAuthor(c?.author);
+    return {
     at: asIso(c?.createdAt),
-    author: normalizeCommentAuthor(c?.author),
+    author: author?.name ?? author?.id,
+    authorId: author?.id,
+    authorName: author?.name,
     body: c?.body ? String(c.body) : undefined,
     internal: typeof c?.internal === 'boolean' ? c.internal : undefined,
-  }));
+    };
+  });
 
   const explicitLinks = linksRaw.map((l) => ({
     id: l?.id ? String(l.id) : undefined,
@@ -486,7 +549,7 @@ function compactContextForPrompt(context: TicketContext): Record<string, unknown
   if (context.title) compact.title = context.title;
   if (context.body) compact.body = context.body;
   if (context.url) compact.url = context.url;
-  if (context.comments.length > 0) compact.comments = context.comments.slice(0, 3);
+  if (context.comments.length > 0) compact.comments = context.comments.slice(0, 10);
   if (context.attachments.length > 0) compact.attachments = context.attachments;
   if (context.links.length > 0) compact.links = context.links;
   return compact;
@@ -503,7 +566,7 @@ function buildDeltaSinceLastTurn(context: TicketContext, previousSeenAtIso?: str
       return Number.isFinite(atMs) && atMs > previousMs;
     })
     .slice(0, 3)
-    .map((c, idx) => `${idx + 1}. [${c.at ?? 'unknown-time'}] ${c.author ?? 'unknown'}: ${c.body ?? ''}`);
+    .map((c, idx) => `${idx + 1}. [${c.at ?? 'unknown-time'}] ${c.authorName ?? c.authorId ?? c.author ?? 'unknown'}: ${c.body ?? ''}`);
 
   if (newComments.length === 0) return 'none';
   return newComments.join('\n');
@@ -576,20 +639,11 @@ export function buildWorkflowLoopPlan(params: {
   }
 
   if (tickKind === 'blocked' || tickKind === 'completed') {
-    const finalized = finalizeTicket(map, tick.id, tickKind, nowIso);
-    if (finalized) {
-      actions.push({
-        kind: 'finalize',
-        sessionId: finalized.sessionId,
-        sessionLabel: finalized.sessionLabel,
-        ticketId: tick.id,
-        text: `Ticket ${tick.id} transitioned to ${tickKind}. Wrap up this thread and stop active execution for this ticket.`,
-      });
-    }
+    finalizeTicket(map, tick.id, tickKind, nowIso);
 
     if (nextTicketId) {
       const nextTicketTitle = output?.nextTicket?.item?.title ? String(output.nextTicket.item.title) : undefined;
-      const nextTicketDisplayId = resolveSessionDisplayId(nextTicketId, output?.nextTicket);
+      const nextTicketDisplayId = nextTicketId;
       const previousEntry = map.sessionsByTicket[nextTicketId];
       const { sessionId, sessionLabel, reused } = ensureSessionForTicket(
         map,
@@ -625,7 +679,7 @@ export function buildWorkflowLoopPlan(params: {
 
   if (currentTicketId) {
     const currentTicketTitle = activeTicketPayload?.item?.title ? String(activeTicketPayload.item.title) : undefined;
-    const currentTicketDisplayId = resolveSessionDisplayId(currentTicketId, activeTicketPayload);
+    const currentTicketDisplayId = currentTicketId;
     const previousEntry = map.sessionsByTicket[currentTicketId];
     const { sessionId, sessionLabel, reused } = ensureSessionForTicket(
       map,

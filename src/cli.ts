@@ -458,6 +458,19 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
     }
 
     if (cmd === 'workflow-loop') {
+      // Per-loop identity cache: avoid repeated `whoami` calls across selection,
+      // auto-reopen, queue reconciliation, and adapter internals in the same run.
+      if (typeof (adapter as any).whoami === 'function') {
+        const originalWhoami = (adapter as any).whoami.bind(adapter);
+        let cachedWhoami: Promise<any> | null = null;
+        (adapter as any).whoami = async () => {
+          if (!cachedWhoami) {
+            cachedWhoami = originalWhoami();
+          }
+          return cachedWhoami;
+        };
+      }
+
       const dryRun = Boolean(flags['dry-run']);
       const dispatchRunId = randomUUID();
       const output = await runWorkflowLoopSelection(adapter, dryRun, requeueTargetStage);

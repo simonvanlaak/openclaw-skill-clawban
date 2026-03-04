@@ -180,9 +180,9 @@ export function buildWorkerSchemaRetryPrompt(errors: string[]): string {
   ].join('\n');
 }
 
-function bulletList(items: string[]): string {
-  if (items.length === 0) return '- (none)';
-  return items.map((item) => `- ${item}`).join('\n');
+function numberedList(items: string[]): string {
+  if (items.length === 0) return '1. (none)';
+  return items.map((item, index) => `${index + 1}. ${item}`).join('\n');
 }
 
 export function formatWorkerResultComment(result: WorkerResult): string {
@@ -190,17 +190,17 @@ export function formatWorkerResultComment(result: WorkerResult): string {
     `Worker decision: ${result.decision}`,
     '',
     'Completed steps:',
-    bulletList(result.completed_steps),
+    numberedList(result.completed_steps),
   ];
 
   if (result.decision === 'completed') {
-    sections.push('', 'Solution summary:', result.solution_summary ?? '', '', 'Evidence:', bulletList(result.evidence));
+    sections.push('', 'Solution summary:', result.solution_summary ?? '', '', 'Evidence:', numberedList(result.evidence));
   }
   if (result.decision === 'blocked') {
-    sections.push('', 'Blocker resolve requests:', bulletList(result.blocker_resolve_requests));
+    sections.push('', 'Blocker resolve requests:', numberedList(result.blocker_resolve_requests));
   }
   if (result.decision === 'uncertain') {
-    sections.push('', 'Clarification questions:', bulletList(result.clarification_questions));
+    sections.push('', 'Clarification questions:', numberedList(result.clarification_questions));
   }
 
   return sections.join('\n').trim();

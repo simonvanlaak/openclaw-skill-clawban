@@ -84,6 +84,7 @@ function extractIssueKey(raw: string | undefined): string | null {
 function desiredMessageFromLoop(params: {
   activeTicketId: string | null;
   activeTitle?: string;
+  activeIdentifier?: string;
   tickKind?: string;
   reasonCode?: string;
   sessionLabel?: string;
@@ -101,7 +102,10 @@ function desiredMessageFromLoop(params: {
   if (!params.activeTicketId) return 'waiting for new assignment';
 
   const displayIdFromLabel = extractDisplayIdFromSessionLabel(params.sessionLabel ?? '');
-  const displayId = 
+  const identifier = cleanOneLine(params.activeIdentifier ?? '');
+  const displayId =
+    extractIssueKey(identifier) ??
+    (identifier || null) ??
     extractIssueKey(displayIdFromLabel ?? undefined) ??
     extractIssueKey(params.sessionId) ??
     extractIssueKey(params.activeTicketId);
@@ -156,6 +160,11 @@ export async function maybeUpdateRocketChatStatusFromWorkflowLoop(params: {
     : typeof params.output?.nextTicket?.item?.title === 'string'
       ? params.output.nextTicket.item.title
       : undefined;
+  const activeIdentifier = typeof params.output?.nextTicket?.identifier === 'string'
+    ? params.output.nextTicket.identifier
+    : typeof params.output?.nextTicket?.item?.identifier === 'string'
+      ? params.output.nextTicket.item.identifier
+      : undefined;
 
   const sessionLabel = activeTicketId ? params.map.sessionsByTicket?.[activeTicketId]?.sessionLabel : undefined;
   const active = params.map.active;
@@ -169,6 +178,7 @@ export async function maybeUpdateRocketChatStatusFromWorkflowLoop(params: {
   const desiredMessage = desiredMessageFromLoop({
     activeTicketId,
     activeTitle,
+    activeIdentifier,
     tickKind,
     reasonCode,
     sessionLabel,

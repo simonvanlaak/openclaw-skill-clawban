@@ -67,5 +67,7 @@ describe('worker_result schema', () => {
     const comment = formatWorkerResultComment(parsed.value);
     expect(comment).toContain('Worker decision: uncertain');
     expect(comment).toContain('Clarification questions:');
+    expect(comment).toContain('1. Investigated API behavior and isolated ambiguous requirement behavior.');
+    expect(comment).toContain('1. Should we persist validation failures to ticket comments or logs only?');
   });
 });
