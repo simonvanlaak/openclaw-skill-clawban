@@ -14,6 +14,7 @@ import { archiveStaleBlockedWorkerSessions } from './workflow/ticket_runtime.js'
 import { type WorkerRuntimeOptions } from './workflow/worker_runtime.js';
 import { runDelegationReconciler } from './workflow/delegation_reconciler.js';
 import { runHumanCommentReconciler } from './workflow/human_comment_reconciler.js';
+import { runDoneTodoRepair } from './workflow/done_todo_repair.js';
 import { runWorkflowLoopController } from './workflow/workflow_loop_controller.js';
 import { runWorkflowLoopSelection } from './workflow/workflow_loop_selection.js';
 import { StageKeySchema } from './stage.js';
@@ -32,6 +33,7 @@ function whatNextTipForCommand(cmd: string): string {
       return 'wait for the next scheduler tick';
     case 'reconcile-delegation':
     case 'reconcile-human-comment':
+    case 'repair-done-todo':
       return 'wait for the next scheduler tick';
     case 'show':
     case 'create':
@@ -73,6 +75,7 @@ function writeHelp(io: CliIo): void {
       '  kanban-workflow create --project-id <uuid> --title "..." [--body "..."]',
       '  kanban-workflow reconcile-delegation --ticket-id <ticket-id> --session-id <session-id>',
       '  kanban-workflow reconcile-human-comment --ticket-id <ticket-id> [--comment-id <comment-id>]',
+      '  kanban-workflow repair-done-todo [--dry-run]',
       '',
     ].join('\n'),
   );
@@ -465,6 +468,29 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
         io.stdout.write(`${JSON.stringify(result.payload, null, 2)}\n`);
       }
       return result.exitCode;
+    }
+
+    if (cmd === 'repair-done-todo') {
+      if (config.adapter.kind !== 'plane') {
+        throw new Error('repair-done-todo currently supports only the plane adapter');
+      }
+
+      const me = await adapter.whoami();
+      const projectIds = Array.isArray(config.adapter.projectIds) && config.adapter.projectIds.length > 0
+        ? config.adapter.projectIds.map((id: unknown) => String(id))
+        : config.adapter.projectId
+          ? [String(config.adapter.projectId)]
+          : [];
+      const result = await runDoneTodoRepair({
+        workspaceSlug: String(config.adapter.workspaceSlug),
+        projectIds,
+        actorId: me?.id ? String(me.id) : undefined,
+        dryRun: Boolean(flags['dry-run']),
+        sinceHours: flags['since-hours'] ? Number(flags['since-hours']) : undefined,
+      });
+
+      io.stdout.write(`${JSON.stringify({ doneTodoRepair: result }, null, 2)}\n`);
+      return 0;
     }
 
     if (cmd === 'create') {
