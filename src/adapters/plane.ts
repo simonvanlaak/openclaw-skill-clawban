@@ -1763,6 +1763,87 @@ export class PlaneAdapter implements Adapter {
     return merged.map((i) => i.id);
   }
 
+  async listOwnBacklogItemsInOrder(): Promise<Array<{
+    id: string;
+    projectId?: string;
+    identifier?: string;
+    title: string;
+    url?: string;
+    stage: import('../stage.js').StageKey;
+    body?: string;
+    labels: string[];
+    assignees?: Array<{ id?: string; username?: string; name?: string } | string>;
+    updatedAt?: Date;
+  }>> {
+    const me = await this.whoami();
+    const meId = me.id;
+    const merged: Array<{
+      id: string;
+      projectId?: string;
+      identifier?: string;
+      title: string;
+      url?: string;
+      stage: import('../stage.js').StageKey;
+      body?: string;
+      labels: string[];
+      assignees?: Array<{ id?: string; username?: string; name?: string } | string>;
+      updatedAt?: Date;
+      priority: number;
+    }> = [];
+
+    for (const projectId of this.projectIds) {
+      const backlogStateId = await this.resolveStateIdForStage(projectId, 'stage:todo').catch(() => undefined);
+      const issues = await this.listIssuesForSelection(projectId, {
+        assigneeId: meId || undefined,
+        stateId: backlogStateId,
+      });
+      const projectIdentifier = await this.getProjectIdentifier(projectId).catch(() => undefined);
+
+      for (const issue of issues) {
+        const id = idFromUnknown((issue as any)?.id);
+        if (!id) continue;
+
+        const canonicalStage =
+          await this.resolveCanonicalStageForIssueRaw(projectId, issue).catch(() => undefined);
+        if (canonicalStage !== 'stage:todo') continue;
+
+        if (meId) {
+          const assigneeIds = extractIssueAssigneeIds(issue);
+          if (assigneeIds.length > 0 && !assigneeIds.some((assigneeId) => assigneeMatchesSelf(assigneeId, me))) {
+            continue;
+          }
+        }
+
+        const sequenceId = Number((issue as any)?.sequence_id ?? (issue as any)?.sequenceId);
+        merged.push({
+          id,
+          projectId,
+          identifier:
+            projectIdentifier && Number.isFinite(sequenceId) && sequenceId > 0
+              ? `${projectIdentifier}-${Math.floor(sequenceId)}`
+              : undefined,
+          title: extractIssueTitle(issue) ?? id,
+          url: extractIssueUrl(issue),
+          stage: 'stage:todo',
+          body: extractIssueBody(issue),
+          labels: extractIssueLabels(issue),
+          assignees: extractIssueAssignees(issue),
+          updatedAt: extractIssueUpdatedAt(issue),
+          priority: extractPriorityFromIssue(issue) ?? Number.NEGATIVE_INFINITY,
+        });
+      }
+    }
+
+    merged.sort((a, b) => {
+      if (a.priority !== b.priority) return b.priority - a.priority;
+      const titleCmp = a.title.localeCompare(b.title, undefined, { sensitivity: 'base' });
+      if (titleCmp !== 0) return titleCmp;
+      return a.id.localeCompare(b.id);
+    });
+
+    return merged.map(({ priority: _priority, ...item }) => item);
+  }
+
   async listBacklogItemsInOrder(): Promise<Array<{
     id: string;
     projectId?: string;

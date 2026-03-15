@@ -361,6 +361,77 @@ describe('PlaneAdapter', () => {
     ]);
   });
 
+  it('returns cheap ranked backlog summaries without snapshot hydration', async () => {
+    process.env.PLANE_API_KEY = 'test-key';
+    process.env.PLANE_BASE_URL = 'https://plane.example';
+
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        results: [
+          {
+            id: 'todo-low',
+            name: 'Low',
+            priority: 'low',
+            sequence_id: 4,
+            state: 'state-todo-1',
+            assignees: ['me-1'],
+          },
+          {
+            id: 'todo-high',
+            name: 'High',
+            priority: 'urgent',
+            sequence_id: 5,
+            state: 'state-todo-1',
+            assignees: ['me-1'],
+          },
+          {
+            id: 'todo-other',
+            name: 'Other',
+            priority: 'urgent',
+            sequence_id: 6,
+            state: 'state-todo-1',
+            assignees: ['other'],
+          },
+        ],
+      }),
+      text: async () => '',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const projectId = `proj-api-backlog-summaries-${Date.now()}`;
+    (execa as any as ExecaMock)
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ id: 'me-1', email: 'me@example.com', display_name: 'Me' }),
+      })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          results: [{ id: 'state-todo-1', name: 'Todo' }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          results: [{ id: projectId, identifier: 'JULES' }],
+        }),
+      });
+
+    const adapter = new PlaneAdapter({
+      workspaceSlug: 'ws',
+      projectId,
+      stageMap: {
+        Todo: 'stage:todo',
+      },
+    });
+
+    const items = await adapter.listOwnBacklogItemsInOrder();
+
+    expect(items.map((item) => item.id)).toEqual(['todo-high', 'todo-low']);
+    expect(items.map((item) => item.identifier)).toEqual(['JULES-5', 'JULES-4']);
+    expect(items.every((item) => item.stage === 'stage:todo')).toBe(true);
+    const calls = (execa as any).mock.calls.map((c: any) => c[1]);
+    expect(calls).not.toContainEqual(['-f', 'json', 'issues', 'list', '-p', projectId]);
+  });
+
   it('reconciles creator assignments for unassigned issues in mapped stages', async () => {
     (execa as any as ExecaMock)
       // issues list

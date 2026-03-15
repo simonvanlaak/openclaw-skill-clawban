@@ -39,6 +39,7 @@ async function listStageItems(
 async function listBacklogItemsInOrder(
   adapter: WorkflowLoopSelectionAdapter,
 ): Promise<WorkItemDetails[]> {
+  if (adapter.listOwnBacklogItemsInOrder) return adapter.listOwnBacklogItemsInOrder();
   if (adapter.listBacklogItemsInOrder) return adapter.listBacklogItemsInOrder();
   const ids = await adapter.listBacklogIdsInOrder();
   return Promise.all(ids.map((id) => adapter.getWorkItem(id)));

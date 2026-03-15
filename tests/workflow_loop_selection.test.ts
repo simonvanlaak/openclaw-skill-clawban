@@ -127,6 +127,16 @@ describe('workflow_loop_selection', () => {
     const adapter = {
       whoami: vi.fn(async () => ({ id: 'me-1', username: 'kwf-bot' })),
       listIdsByStage: vi.fn(async () => []),
+      listOwnBacklogItemsInOrder: vi.fn(async () => [
+        {
+          id: 'T2',
+          title: 'Mine',
+          identifier: 'JULES-295',
+          stage: 'stage:todo' as const,
+          assignees: [{ id: 'me-1' }],
+          labels: [],
+        },
+      ]),
       listBacklogIdsInOrder: vi.fn(async () => {
         throw new Error('should not be called');
       }),
@@ -157,7 +167,8 @@ describe('workflow_loop_selection', () => {
     });
 
     expect(output.tick).toEqual({ kind: 'started', id: 'T2', reasonCode: 'start_next_assigned_backlog' });
-    expect(adapter.listBacklogItemsInOrder).toHaveBeenCalledTimes(1);
+    expect(adapter.listOwnBacklogItemsInOrder).toHaveBeenCalledTimes(1);
+    expect(adapter.listBacklogItemsInOrder).not.toHaveBeenCalled();
     expect(adapter.getWorkItem).not.toHaveBeenCalled();
   });
 
