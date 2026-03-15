@@ -1262,6 +1262,41 @@ export class PlaneAdapter implements Adapter {
       .map((i) => i.id);
   }
 
+  async listIdsInDoneState(): Promise<string[]> {
+    const me = await this.whoami();
+    const meId = me.id;
+
+    const merged: Array<{ id: string; updatedAt?: Date }> = [];
+
+    for (const projectId of this.projectIds) {
+      const issues = normalizePlaneIssuesList(await this.listIssuesRaw(projectId, { assigneeId: meId || undefined }));
+      let items = issues.filter((issue) => {
+        const stateName = extractIssueStageName(issue);
+        return typeof stateName === 'string' && stateName.trim().toLowerCase() === 'done';
+      });
+
+      if (meId) {
+        const hasAnyAssigneeData = items.some((issue) => extractIssueAssigneeIds(issue).length > 0);
+        if (hasAnyAssigneeData) {
+          items = items.filter((issue) => extractIssueAssigneeIds(issue).some((assigneeId) => assigneeMatchesSelf(assigneeId, me)));
+        }
+      }
+
+      for (const issue of items) {
+        const id = idFromUnknown((issue as any)?.id);
+        if (!id) continue;
+        merged.push({
+          id,
+          updatedAt: parsePlaneDate(String((issue as any)?.updated_at ?? (issue as any)?.updatedAt ?? '')),
+        });
+      }
+    }
+
+    return merged
+      .sort((a, b) => (a.updatedAt?.getTime() ?? 0) - (b.updatedAt?.getTime() ?? 0))
+      .map((item) => item.id);
+  }
+
   private async listIssuesRaw(projectId: string, opts?: { assigneeId?: string }): Promise<any> {
     const args = ['issues', 'list', '-p', projectId] as string[];
     if (opts?.assigneeId) args.push('--assignee', opts.assigneeId);
