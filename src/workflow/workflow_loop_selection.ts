@@ -6,7 +6,45 @@ import {
   loadWorkerDelegationState,
   type WorkerRuntimeOptions,
 } from './worker_runtime.js';
-import { show, start } from '../verbs/verbs.js';
+import type { WorkflowLoopSelectionOutput } from './workflow_loop_ports.js';
+import type { ShowPayload, WorkItemDetails, WorkItemLink, WorkItemAttachment } from '../verbs/types.js';
+
+type WorkflowLoopSelectionAdapter = {
+  name(): string;
+  whoami(): Promise<{ id?: string; username?: string; name?: string }>;
+  listIdsByStage(stage: StageKey): Promise<string[]>;
+  listBacklogIdsInOrder(): Promise<string[]>;
+  getWorkItem(id: string): Promise<WorkItemDetails>;
+  listComments(
+    id: string,
+    opts: { limit?: number; newestFirst: boolean; includeInternal: boolean },
+  ): Promise<ShowPayload['comments']>;
+  listAttachments(id: string): Promise<WorkItemAttachment[]>;
+  listLinkedWorkItems(id: string): Promise<WorkItemLink[]>;
+  setStage(id: string, stage: StageKey): Promise<void>;
+};
+
+async function showTicket(adapter: WorkflowLoopSelectionAdapter, id: string): Promise<ShowPayload> {
+  const item = await adapter.getWorkItem(id);
+  const [linked, comments, attachments] = await Promise.all([
+    adapter.listLinkedWorkItems(id),
+    adapter.listComments(id, {
+      newestFirst: true,
+      includeInternal: true,
+    }),
+    adapter.listAttachments(id),
+  ]);
+
+  return {
+    adapter: adapter.name(),
+    item: {
+      ...item,
+      attachments,
+      linked,
+    },
+    comments,
+  };
+}
 
 function actorKeys(actor: { id?: string; username?: string; name?: string } | undefined): string[] {
   if (!actor) return [];
@@ -41,7 +79,7 @@ function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
 }
 
 async function findPotentialDuplicates(
-  adapter: any,
+  adapter: WorkflowLoopSelectionAdapter,
   selectedTicketId: string,
   selectedTitle: string,
   maxResults = 10,
@@ -98,12 +136,12 @@ async function findPotentialDuplicates(
 }
 
 export async function runWorkflowLoopSelection(params: {
-  adapter: any;
+  adapter: WorkflowLoopSelectionAdapter;
   map: SessionMap;
   dryRun: boolean;
   requeueTargetStage?: StageKey;
   workerRuntimeOptions?: WorkerRuntimeOptions;
-}): Promise<any> {
+}): Promise<WorkflowLoopSelectionOutput> {
   const requeueTargetStage = params.requeueTargetStage ?? 'stage:todo';
   const autoReopen = await runAutoReopenOnHumanComment({
     adapter: params.adapter,
@@ -152,7 +190,7 @@ export async function runWorkflowLoopSelection(params: {
         await params.adapter.setStage(extra.id, 'stage:todo');
       }
     }
-    const payload = await show(params.adapter, keep.id);
+    const payload = await showTicket(params.adapter, keep.id);
     const potentialDuplicates = await findPotentialDuplicates(
       params.adapter, keep.id, String(payload?.item?.title ?? ''),
     );
@@ -169,9 +207,9 @@ export async function runWorkflowLoopSelection(params: {
     const item = await params.adapter.getWorkItem(id);
     if (!isAssignedToSelf(item.assignees, me)) continue;
     if (!params.dryRun) {
-      await start(params.adapter, id);
+      await params.adapter.setStage(id, 'stage:in-progress');
     }
-    const payload = await show(params.adapter, id);
+    const payload = await showTicket(params.adapter, id);
     const potentialDuplicates = await findPotentialDuplicates(
       params.adapter, id, String(payload?.item?.title ?? ''),
     );

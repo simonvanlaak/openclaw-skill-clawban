@@ -1,5 +1,4 @@
 import {
-  applyWorkerCommandToSessionMap,
   buildWorkflowLoopPlan,
   markSessionInProgress,
   saveSessionMap,
@@ -8,24 +7,18 @@ import {
 } from '../automation/session_dispatcher.js';
 import { shouldQuietPollAfterCarryForward } from './decision_policy.js';
 import {
-  maybeSendNoWorkFirstHitAlert,
-  type NoWorkAlertResult,
-} from './no_work_alert.js';
-import {
-  maybeUpdateRocketChatStatusFromWorkflowLoop,
-  type RocketChatStatusUpdate,
-} from './rocketchat_status.js';
-import {
-  reconcileQueuePositionComments,
-  type QueuePositionReconcileResult,
-} from './queue_position_comments.js';
-import { buildRetryPrompt } from './ticket_runtime.js';
+  runWorkflowLoopHousekeeping,
+} from './workflow_loop_housekeeping.js';
 import {
   dispatchWorkerTurn,
   loadWorkerDelegationState,
   type WorkerRuntimeOptions,
 } from './worker_runtime.js';
 import { applyWorkerOutputToTicket, type WorkerExecutionOutcome } from './worker_output_applier.js';
+import type {
+  WorkflowLoopControllerAdapter,
+  WorkflowLoopSelectionOutput,
+} from './workflow_loop_ports.js';
 
 export type WorkflowLoopExecution = WorkerExecutionOutcome | {
   sessionId: string;
@@ -45,21 +38,21 @@ export type WorkflowLoopControllerResult =
         workflowLoop: {
           dryRun: boolean;
           dispatchRunId: string;
-          actions: any[];
+          actions: import('../automation/session_dispatcher.js').DispatchAction[];
           execution: WorkflowLoopExecution[];
-          noWorkAlert: NoWorkAlertResult | null;
-          queuePositionUpdate: QueuePositionReconcileResult | null;
-          rocketChatStatusUpdate: RocketChatStatusUpdate | null;
+          noWorkAlert: import('./no_work_alert.js').NoWorkAlertResult | null;
+          queuePositionUpdate: import('./queue_position_comments.js').QueuePositionReconcileResult | null;
+          rocketChatStatusUpdate: import('./rocketchat_status.js').RocketChatStatusUpdate | null;
           activeTicketId: string | null;
           mapPath: string;
         };
-        autopilot: any;
+        autopilot: WorkflowLoopSelectionOutput;
       };
     };
 
 export async function runWorkflowLoopController(params: {
-  adapter: any;
-  output: any;
+  adapter: WorkflowLoopControllerAdapter;
+  output: WorkflowLoopSelectionOutput;
   previousMap: SessionMap;
   dryRun: boolean;
   dispatchRunId: string;
@@ -78,9 +71,6 @@ export async function runWorkflowLoopController(params: {
   );
 
   const execution: WorkflowLoopExecution[] = [];
-  let noWorkAlert: NoWorkAlertResult | null = null;
-  let rocketChatStatusUpdate: RocketChatStatusUpdate | null = null;
-  let queuePositionUpdate: QueuePositionReconcileResult | null = null;
 
   const recordCompletedWorkDuration = (ticketId: string, completedAt: Date): void => {
     const entry = plan.map.sessionsByTicket?.[ticketId];
@@ -179,33 +169,8 @@ export async function runWorkflowLoopController(params: {
     }
   }
 
-  noWorkAlert = await maybeSendNoWorkFirstHitAlert({
-    output,
-    previousMap,
-    map: plan.map,
-    dryRun,
-  });
-
-  try {
-    queuePositionUpdate = await reconcileQueuePositionComments({
-      adapter,
-      map: plan.map,
-      dryRun,
-    });
-  } catch (err: any) {
-    queuePositionUpdate = {
-      outcome: 'error',
-      queuedTickets: 0,
-      activeOffset: 0,
-      created: 0,
-      updated: 0,
-      deleted: 0,
-      unchanged: 0,
-      errors: [err?.message ?? String(err)],
-    };
-  }
-
-  rocketChatStatusUpdate = await maybeUpdateRocketChatStatusFromWorkflowLoop({
+  const housekeeping = await runWorkflowLoopHousekeeping({
+    adapter,
     output,
     previousMap,
     map: plan.map,
@@ -234,9 +199,9 @@ export async function runWorkflowLoopController(params: {
         dispatchRunId,
         actions: plan.actions,
         execution,
-        noWorkAlert,
-        queuePositionUpdate,
-        rocketChatStatusUpdate,
+        noWorkAlert: housekeeping.noWorkAlert,
+        queuePositionUpdate: housekeeping.queuePositionUpdate,
+        rocketChatStatusUpdate: housekeeping.rocketChatStatusUpdate,
         activeTicketId: plan.activeTicketId,
         mapPath: params.mapPath ?? '.tmp/kwf-session-map.json',
       },

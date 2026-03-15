@@ -8,6 +8,7 @@ import {
   type WorkerRuntimeOptions,
 } from './worker_runtime.js';
 import { applyWorkerOutputToTicket, type WorkerExecutionOutcome } from './worker_output_applier.js';
+import type { WorkflowLifecycleAdapter } from './workflow_loop_ports.js';
 
 export type DelegationReconcileResult =
   | {
@@ -28,7 +29,7 @@ export type DelegationReconcileResult =
       };
     };
 
-type AdapterLike = {
+type AdapterLike = WorkflowLifecycleAdapter & {
   getWorkItem?(ticketId: string): Promise<any>;
 };
 

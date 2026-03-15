@@ -57,7 +57,7 @@ describe('workflow_loop_controller', () => {
   it('persists reserved state before dispatching worker execution', async () => {
     const previousMap = { version: 1 as const, sessionsByTicket: {} };
     const output = {
-      tick: { kind: 'started', id: 'A1', reasonCode: 'start_next_assigned_backlog' },
+      tick: { kind: 'started' as const, id: 'A1', reasonCode: 'start_next_assigned_backlog' },
       nextTicket: {
         item: {
           id: 'A1',
@@ -65,6 +65,7 @@ describe('workflow_loop_controller', () => {
         },
         comments: [],
       },
+      dryRun: false,
     };
 
     await expect(

@@ -29,7 +29,7 @@ describe('workflow_loop_selection', () => {
       getWorkItem: vi.fn(async (id: string) => ({
         id,
         title: id === 'A1' ? 'Older task' : 'Newest task',
-        stage: 'stage:in-progress',
+        stage: 'stage:in-progress' as const,
         assignees: [{ id: 'me-1' }],
         updatedAt: new Date(id === 'A1' ? '2026-03-10T00:00:00.000Z' : '2026-03-10T01:00:00.000Z'),
         labels: [],
@@ -60,7 +60,7 @@ describe('workflow_loop_selection', () => {
       getWorkItem: vi.fn(async (id: string) => ({
         id,
         title: id === 'T1' ? 'Not mine' : 'Mine',
-        stage: 'stage:todo',
+        stage: 'stage:todo' as const,
         assignees: id === 'T1' ? [{ id: 'other' }] : [{ id: 'me-1' }],
         labels: [],
       })),
@@ -93,7 +93,7 @@ describe('workflow_loop_selection', () => {
       getWorkItem: vi.fn(async () => ({
         id: 'A2',
         title: 'Current task',
-        stage: 'stage:in-progress',
+        stage: 'stage:in-progress' as const,
         assignees: [{ id: 'me-1' }],
         updatedAt: new Date('2026-03-10T01:00:00.000Z'),
         labels: [],

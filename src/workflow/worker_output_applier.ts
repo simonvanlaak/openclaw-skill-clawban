@@ -14,7 +14,7 @@ import {
   dispatchWorkerTurn,
   type WorkerRuntimeOptions,
 } from './worker_runtime.js';
-import { ask, setStage, update } from '../verbs/verbs.js';
+import type { WorkflowLifecycleAdapter } from './workflow_loop_ports.js';
 
 export type WorkerExecutionOutcome = {
   sessionId: string;
@@ -48,7 +48,7 @@ function buildSessionRoutingWarning(
 }
 
 export async function applyWorkerOutputToTicket(params: {
-  adapter: any;
+  adapter: WorkflowLifecycleAdapter;
   map: SessionMap;
   action: { sessionId: string; ticketId: string; projectId?: string };
   workerOutput: string;
@@ -139,8 +139,8 @@ export async function applyWorkerOutputToTicket(params: {
           commentText += `\n\ncc ${mentions.join(' ')} - ready for review.`;
         }
       }
-      await update(adapter, action.ticketId, commentText);
-      await setStage(adapter, action.ticketId, 'stage:in-review');
+      await adapter.addComment(action.ticketId, commentText);
+      await adapter.setStage(action.ticketId, 'stage:in-review');
     } else {
       let askText = parsed.text;
       if (typeof adapter.getStakeholderMentions === 'function') {
@@ -150,7 +150,8 @@ export async function applyWorkerOutputToTicket(params: {
           askText += `\n\ncc ${mentions.join(' ')} - ${verb}.`;
         }
       }
-      await ask(adapter, action.ticketId, askText);
+      await adapter.addComment(action.ticketId, askText);
+      await adapter.setStage(action.ticketId, 'stage:blocked');
     }
 
     if (Array.isArray(workerLinks) && workerLinks.length > 0 && typeof adapter.addLinks === 'function') {
