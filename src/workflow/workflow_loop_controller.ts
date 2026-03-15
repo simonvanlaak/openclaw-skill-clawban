@@ -14,6 +14,7 @@ import {
   loadWorkerDelegationState,
   type WorkerRuntimeOptions,
 } from './worker_runtime.js';
+import { recoverWorkerDecisionFromComments } from './worker_decision_recovery.js';
 import { applyWorkerOutputToTicket, type WorkerExecutionOutcome } from './worker_output_applier.js';
 import type {
   WorkflowLoopControllerAdapter,
@@ -99,6 +100,18 @@ export async function runWorkflowLoopController(params: {
 
     for (const action of plan.actions) {
       if (action.kind === 'work') {
+        const recoveredExecution = await recoverWorkerDecisionFromComments({
+          adapter,
+          map: plan.map,
+          output,
+          action,
+          onCompleted: recordCompletedWorkDuration,
+        });
+        if (recoveredExecution) {
+          execution.push(recoveredExecution);
+          continue;
+        }
+
         const delegationState = await loadWorkerDelegationState(action.sessionId, action.ticketId, workerRuntimeOptions);
         if (delegationState.kind === 'running') {
           markSessionInProgress(plan.map, action.ticketId, new Date());
