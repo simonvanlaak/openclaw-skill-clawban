@@ -6,6 +6,8 @@ import type { StageKey } from '../stage.js';
 import { markTicketQueued } from '../workflow/workflow_state.js';
 
 export const DEFAULT_AUTO_REOPEN_CURSOR_PATH = '.tmp/kwf-auto-reopen-cursor.json';
+const AUTO_REOPEN_FULL_SCAN_LIMIT = 100;
+const AUTO_REOPEN_NEWEST_ONLY_LIMIT = 1;
 
 export type AutoReopenCursor = {
   version: 1;
@@ -177,20 +179,36 @@ export async function runAutoReopenForTicket(opts: {
 }): Promise<{ actions: AutoReopenAction[] }> {
   const cursorPath = opts.cursorPath ?? DEFAULT_AUTO_REOPEN_CURSOR_PATH;
   const includeInternal = opts.includeInternal ?? true;
-  const commentLimit = Math.max(1, opts.commentLimit ?? 100);
+  const commentLimit = Math.max(1, opts.commentLimit ?? AUTO_REOPEN_FULL_SCAN_LIMIT);
   const dryRun = Boolean(opts.dryRun);
   const requeueTargetStage: StageKey = opts.requeueTargetStage ?? 'stage:todo';
 
   const cursor = await loadCursor(cursorPath);
   const me = await opts.adapter.whoami();
   const meKeys = normalizeActorKeys(me);
-  const comments = await opts.adapter.listComments(opts.ticketId, {
-    limit: commentLimit,
+  const newestComments = await opts.adapter.listComments(opts.ticketId, {
+    limit: AUTO_REOPEN_NEWEST_ONLY_LIMIT,
     newestFirst: true,
     includeInternal,
   });
+  const newestCommentId = newestComments[0]?.id;
+  if (
+    !opts.expectedTriggerCommentId &&
+    newestCommentId &&
+    cursor.seenByTicket[opts.ticketId] === newestCommentId
+  ) {
+    return { actions: [] };
+  }
 
-  const { triggerCommentId, newestCommentId } = findAutoReopenTrigger({
+  const comments = commentLimit === AUTO_REOPEN_NEWEST_ONLY_LIMIT
+    ? newestComments
+    : await opts.adapter.listComments(opts.ticketId, {
+        limit: commentLimit,
+        newestFirst: true,
+        includeInternal,
+      });
+
+  const { triggerCommentId, newestCommentId: resolvedNewestCommentId } = findAutoReopenTrigger({
     comments,
     seenCommentId: cursor.seenByTicket[opts.ticketId],
     expectedTriggerCommentId: opts.expectedTriggerCommentId,
@@ -243,8 +261,8 @@ export async function runAutoReopenForTicket(opts: {
     }
   }
 
-  if (newestCommentId && !dryRun) {
-    cursor.seenByTicket[opts.ticketId] = newestCommentId;
+  if (resolvedNewestCommentId && !dryRun) {
+    cursor.seenByTicket[opts.ticketId] = resolvedNewestCommentId;
     await saveCursor(cursorPath, cursor);
   }
 
@@ -263,7 +281,7 @@ export async function runAutoReopenOnHumanComment(opts: {
 }): Promise<{ actions: AutoReopenAction[] }> {
   const cursorPath = opts.cursorPath ?? DEFAULT_AUTO_REOPEN_CURSOR_PATH;
   const includeInternal = opts.includeInternal ?? true;
-  const commentLimit = Math.max(1, opts.commentLimit ?? 100);
+  const commentLimit = Math.max(1, opts.commentLimit ?? AUTO_REOPEN_FULL_SCAN_LIMIT);
   const dryRun = Boolean(opts.dryRun);
   const requeueTargetStage: StageKey = opts.requeueTargetStage ?? 'stage:todo';
 
@@ -284,13 +302,25 @@ export async function runAutoReopenOnHumanComment(opts: {
 
   for (const { fromStage: stage, ids } of watchedBuckets) {
     for (const id of ids) {
-      const comments = await opts.adapter.listComments(id, {
-        limit: commentLimit,
+      const newestComments = await opts.adapter.listComments(id, {
+        limit: AUTO_REOPEN_NEWEST_ONLY_LIMIT,
         newestFirst: true,
         includeInternal,
       });
+      const newestCommentId = newestComments[0]?.id;
+      if (newestCommentId && cursor.seenByTicket[id] === newestCommentId) {
+        continue;
+      }
 
-      const { triggerCommentId, newestCommentId } = findAutoReopenTrigger({
+      const comments = commentLimit === AUTO_REOPEN_NEWEST_ONLY_LIMIT
+        ? newestComments
+        : await opts.adapter.listComments(id, {
+            limit: commentLimit,
+            newestFirst: true,
+            includeInternal,
+          });
+
+      const { triggerCommentId, newestCommentId: resolvedNewestCommentId } = findAutoReopenTrigger({
         comments,
         seenCommentId: cursor.seenByTicket[id],
         meKeys,
@@ -336,7 +366,7 @@ export async function runAutoReopenOnHumanComment(opts: {
         }
       }
 
-      if (newestCommentId) cursor.seenByTicket[id] = newestCommentId;
+      if (resolvedNewestCommentId) cursor.seenByTicket[id] = resolvedNewestCommentId;
     }
   }
 

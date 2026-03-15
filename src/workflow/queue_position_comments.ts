@@ -4,6 +4,8 @@ import { currentActiveSession } from './workflow_state.js';
 const LEGACY_QUEUE_MARKER = '[kwf:queue-position]';
 const QUEUE_COMMENT_TEMPLATE_VERSION = 3;
 const DEFAULT_AVERAGE_DURATION_MS = 20 * 60 * 1000;
+const QUEUE_COMMENT_SCAN_LIMIT = 25;
+const QUEUE_COMMENT_LOOKUP_LIMIT = 10;
 
 // Keep v2 constants for detection/cleanup.
 const QUEUE_TEXT_PREFIX_V2 = 'There are ';
@@ -127,7 +129,7 @@ export async function reconcileQueuePositionComments(params: {
     if (shouldScanForStrays) {
       try {
         const comments = await params.adapter.listComments(activeTicketId, {
-          limit: 100,
+          limit: QUEUE_COMMENT_SCAN_LIMIT,
           newestFirst: true,
           includeInternal: true,
         });
@@ -172,7 +174,7 @@ export async function reconcileQueuePositionComments(params: {
     if (params.dryRun) continue;
     try {
       const comments = await params.adapter.listComments(ticketId, {
-        limit: 100,
+        limit: QUEUE_COMMENT_SCAN_LIMIT,
         newestFirst: true,
         includeInternal: true,
       });
@@ -206,7 +208,7 @@ export async function reconcileQueuePositionComments(params: {
       if (!params.dryRun) {
         try {
           const comments = await params.adapter.listComments(ticketId, {
-            limit: 100,
+            limit: QUEUE_COMMENT_SCAN_LIMIT,
             newestFirst: true,
             includeInternal: true,
           });
@@ -237,7 +239,7 @@ export async function reconcileQueuePositionComments(params: {
       let existingBody: string | undefined;
       try {
         const comments = await params.adapter.listComments(ticketId, {
-          limit: 100,
+          limit: QUEUE_COMMENT_SCAN_LIMIT,
           newestFirst: true,
           includeInternal: true,
         });
@@ -304,7 +306,7 @@ export async function reconcileQueuePositionComments(params: {
     let duplicateComments: Array<{ id: string }> = [];
     try {
       const comments = await params.adapter.listComments(ticketId, {
-        limit: 100,
+        limit: QUEUE_COMMENT_SCAN_LIMIT,
         newestFirst: true,
         includeInternal: true,
       });
@@ -362,7 +364,7 @@ export async function reconcileQueuePositionComments(params: {
     try {
       await params.adapter.addComment(ticketId, desiredBody);
       const comments = await params.adapter.listComments(ticketId, {
-        limit: 25,
+        limit: QUEUE_COMMENT_LOOKUP_LIMIT,
         newestFirst: true,
         includeInternal: true,
       });

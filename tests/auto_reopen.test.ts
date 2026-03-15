@@ -101,6 +101,43 @@ describe('auto-reopen on human comment', () => {
     await fs.rm(path, { force: true });
   });
 
+  test('skips full comment scan when cursor already matches newest comment', async () => {
+    const path = cursorPath('kwf-auto-reopen-short-circuit');
+    await fs.writeFile(path, JSON.stringify({ version: 1, seenByTicket: { 'BL-4': 'c-latest' } }), 'utf8');
+
+    const adapter = {
+      whoami: vi.fn(async () => ({ username: 'kwf-bot' })),
+      listIdsByStage: vi.fn(async (stage: string) => (stage === 'stage:blocked' ? ['BL-4'] : [])),
+      listComments: vi.fn(async (_id: string, opts: { limit: number }) => {
+        if (opts.limit === 1) {
+          return [
+            {
+              id: 'c-latest',
+              body: 'No change here.',
+              author: { username: 'kwf-bot' },
+              createdAt: new Date('2026-02-28T14:03:00Z'),
+            },
+          ];
+        }
+        throw new Error('should not request full comment history');
+      }),
+      setStage: vi.fn(async () => undefined),
+    };
+
+    const res = await runAutoReopenOnHumanComment({ adapter, cursorPath: path });
+
+    expect(res.actions).toEqual([]);
+    expect(adapter.setStage).not.toHaveBeenCalled();
+    expect(adapter.listComments).toHaveBeenCalledTimes(1);
+    expect(adapter.listComments).toHaveBeenCalledWith('BL-4', {
+      limit: 1,
+      newestFirst: true,
+      includeInternal: true,
+    });
+
+    await fs.rm(path, { force: true });
+  });
+
   test('reopens when worker relays a human comment in imported body metadata', async () => {
     const path = cursorPath('kwf-auto-reopen-relayed-human');
     const adapter = {
