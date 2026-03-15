@@ -154,6 +154,20 @@ describe('session workflow-loop', () => {
     expect(plan.actions[0]?.text).toContain('"nextStepHint": "Prototype a sessionStorage fallback before retrying."');
   });
 
+  it('includes the ticket probe runbook command in the worker prompt', () => {
+    const plan = buildWorkflowLoopPlan({
+      previousMap: { version: 1 as const, sessionsByTicket: {} },
+      now: new Date('2026-02-28T14:05:00.000Z'),
+      autopilotOutput: {
+        tick: { kind: 'in_progress', id: 'A1', inProgressIds: ['A1'] },
+        nextTicket: { kind: 'item', item: { id: 'A1', title: 'Fix login race' } },
+      },
+    });
+
+    expect(plan.actions[0]?.text).toContain('npx tsx scripts/kwf_ticket_probe.ts --ticket-id A1');
+    expect(plan.actions[0]?.text).toContain('Use the probe JSON as your starting evidence bundle before doing deeper manual checks.');
+  });
+
   it('uses linked issue key for worker session id + label when available', () => {
     const plan = buildWorkflowLoopPlan({
       previousMap: { version: 1 as const, sessionsByTicket: {} },

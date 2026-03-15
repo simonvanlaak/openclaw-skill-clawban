@@ -765,6 +765,8 @@ function buildWorkInstruction(params: {
     'PREWORK (reduce duplicates):',
     '- Before doing implementation, search for similar Plane tickets by keywords from title/body.',
     '- Use CONTEXT_JSON.potentialDuplicates as a starting point, but verify in Plane.',
+    `- First run the ticket bootstrap probe: source /root/.openclaw/workspace/scripts/plane_env.sh && npx tsx scripts/kwf_ticket_probe.ts --ticket-id ${params.ticketId}`,
+    '- Use the probe JSON as your starting evidence bundle before doing deeper manual checks.',
     '',
     'DELTA_SINCE_LAST_TURN',
     delta,
