@@ -16,6 +16,7 @@ import { runDelegationReconciler } from './workflow/delegation_reconciler.js';
 import { runHumanCommentReconciler } from './workflow/human_comment_reconciler.js';
 import { runDoneTodoRepair } from './workflow/done_todo_repair.js';
 import { runSubagentCompletionReconciler } from './workflow/subagent_completion_reconciler.js';
+import { runActiveRunWatchdog } from './workflow/active_run_watchdog.js';
 import { runAutoReopenOnHumanComment } from './automation/auto_reopen.js';
 import { runWorkflowLoopController } from './workflow/workflow_loop_controller.js';
 import { runWorkflowLoopSelection } from './workflow/workflow_loop_selection.js';
@@ -80,6 +81,7 @@ function writeHelp(io: CliIo): void {
       '  kanban-workflow reconcile-delegation --ticket-id <ticket-id> --session-id <session-id>',
       '  kanban-workflow reconcile-subagent-ended --child-session-key <session-key>',
       '  kanban-workflow reconcile-human-comment --ticket-id <ticket-id> [--comment-id <comment-id>]',
+      '  kanban-workflow reconcile-active-runs [--dry-run]',
       '  kanban-workflow auto-reopen-scan [--dry-run]',
       '  kanban-workflow repair-done-todo [--dry-run]',
       '',
@@ -409,6 +411,15 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
 
       const dryRun = Boolean(flags['dry-run']);
       const dispatchRunId = randomUUID();
+      if (!dryRun) {
+        await runActiveRunWatchdog({
+          adapter,
+          dispatchRunId,
+          workerAgentId: WORKER_AGENT_ID,
+          workerRuntimeOptions: WORKER_RUNTIME_OPTIONS,
+          requeueTargetStage,
+        });
+      }
       const previousMap = await loadSessionMap();
       archiveStaleBlockedWorkerSessions(previousMap, new Date(), 7);
       const output = await runWorkflowLoopSelection({
@@ -497,6 +508,18 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
         io.stdout.write(`${JSON.stringify(result.payload, null, 2)}\n`);
       }
       return result.exitCode;
+    }
+
+    if (cmd === 'reconcile-active-runs') {
+      const result = await runActiveRunWatchdog({
+        adapter,
+        dispatchRunId: randomUUID(),
+        workerAgentId: WORKER_AGENT_ID,
+        workerRuntimeOptions: WORKER_RUNTIME_OPTIONS,
+        requeueTargetStage,
+      });
+      io.stdout.write(`${JSON.stringify({ activeRunWatchdog: result }, null, 2)}\n`);
+      return 0;
     }
 
     if (cmd === 'auto-reopen-scan') {

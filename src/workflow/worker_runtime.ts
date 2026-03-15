@@ -20,6 +20,7 @@ export type DispatchWorkerTurnResult =
   | {
       kind: 'delegated';
       notice: string;
+      requestId: string;
       runId: string;
       startedAt: string;
       waitTimeoutSeconds: number;
@@ -406,6 +407,7 @@ export async function extractCompletedAssistantReplyWithLocalFallback(params: {
 function buildDelegationNotice(params: {
   ticketId: string;
   sessionId: string;
+  requestId: string;
   runId: string;
   runTimeoutSeconds: number;
   sessionKey?: string;
@@ -413,6 +415,7 @@ function buildDelegationNotice(params: {
   return [
     `Worker started for ticket ${params.ticketId}. Awaiting asynchronous completion.`,
     `sessionId: ${params.sessionId}`,
+    `requestId: ${params.requestId}`,
     `runId: ${params.runId}`,
     `runTimeoutSeconds: ${params.runTimeoutSeconds}`,
     ...(params.sessionKey ? [`childSessionKey: ${params.sessionKey}`] : []),
@@ -461,7 +464,7 @@ async function clearWorkerDelegation(delegationDir: string, sessionId: string): 
 }
 
 function entryToDelegationMeta(ticketId: string, entry: SessionEntry): WorkerDelegationMeta | null {
-  if (!entry.activeRun?.sessionKey) return null;
+  if (!entry.activeRun?.sessionKey || !entry.activeRun.runId) return null;
   return {
     ticketId,
     dispatchRunId: 'spawn',
@@ -480,6 +483,9 @@ export async function loadTrackedWorkerRunState(
   entry: SessionEntry | undefined,
   opts: WorkerRuntimeOptions,
 ): Promise<WorkerDelegationState> {
+  if (entry?.activeRun?.status === 'spawn_requested') {
+    return { kind: 'none' };
+  }
   if (entry?.activeRun?.status === 'started' && entry.activeRun.sessionKey) {
     const meta = entryToDelegationMeta(ticketId, entry);
     if (!meta) return { kind: 'none' };
@@ -623,6 +629,7 @@ export async function dispatchWorkerTurn(
     sessionId: string;
     text: string;
     thinking: string;
+    idempotencyKey?: string;
   },
   opts: WorkerRuntimeOptions,
 ): Promise<DispatchWorkerTurnResult> {
@@ -636,6 +643,7 @@ export async function dispatchWorkerTurn(
   const runTimeoutSeconds = timeoutMsToSeconds(
     resolvePositiveInt(process.env.KWF_WORKER_RUN_TIMEOUT_MS, 60 * 60 * 1000),
   );
+  const requestId = String(params.idempotencyKey ?? '').trim() || randomUUID();
   const requesterSessionKey = opts.requesterSessionKey ?? 'agent:kanban-workflow-workflow-loop:main';
   const sendResponse = await gatewayCallWithRetry({
     method: 'sessions_spawn',
@@ -647,7 +655,7 @@ export async function dispatchWorkerTurn(
       runTimeoutSeconds,
       cleanup: 'keep',
       thinking: params.thinking,
-      idempotencyKey: randomUUID(),
+      idempotencyKey: requestId,
     },
     timeoutMs: Math.max(opts.defaultSyncTimeoutMs, 15_000),
     maxAttempts: resolveWorkerSendMaxAttempts(),
@@ -661,10 +669,12 @@ export async function dispatchWorkerTurn(
     notice: buildDelegationNotice({
       ticketId: params.ticketId,
       sessionId: params.sessionId,
+      requestId,
       runId: started.runId,
       runTimeoutSeconds,
       sessionKey: started.childSessionKey,
     }),
+    requestId,
     runId: started.runId,
     startedAt: new Date().toISOString(),
     waitTimeoutSeconds: runTimeoutSeconds,

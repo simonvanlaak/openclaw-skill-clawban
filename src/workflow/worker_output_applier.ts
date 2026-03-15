@@ -210,6 +210,7 @@ export async function applyWorkerOutputToTicket(params: {
     if (retry.kind === 'delegated') {
       const entry = ensureSessionEntry(map, action.ticketId, action.sessionId);
       entry.activeRun = {
+        requestId: retry.requestId,
         runId: retry.runId,
         status: 'started',
         sentAt: retry.startedAt,

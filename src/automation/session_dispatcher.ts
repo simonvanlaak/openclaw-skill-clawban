@@ -40,8 +40,9 @@ export type SessionEntry = {
     nextStepHint?: string;
   };
   activeRun?: {
-    runId: string;
-    status: 'started' | 'completed' | 'error';
+    requestId: string;
+    runId?: string;
+    status: 'spawn_requested' | 'started' | 'completed' | 'error';
     sentAt: string;
     waitTimeoutSeconds: number;
     sessionKey?: string;

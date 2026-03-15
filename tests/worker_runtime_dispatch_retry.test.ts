@@ -59,6 +59,7 @@ describe('worker runtime dispatch retries', () => {
       ),
     ).resolves.toMatchObject({
       kind: 'delegated',
+      requestId: expect.any(String),
       runId: 'retry-send',
       sessionKey: 'agent:kanban-workflow-worker:subagent:retry-send',
     });

@@ -12,6 +12,7 @@ const {
         lastState: 'in_progress' as const,
         lastSeenAt: '2026-03-15T20:00:00.000Z',
         activeRun: {
+          requestId: 'req-296',
           runId: 'run-296',
           status: 'started' as const,
           sentAt: '2026-03-15T20:00:00.000Z',
@@ -110,6 +111,57 @@ describe('subagent_completion_reconciler', () => {
     });
 
     expect(result).toEqual({ quiet: true, exitCode: 0, reason: 'not_worker_subagent' });
+    expect(runDelegationReconciler).not.toHaveBeenCalled();
+  });
+
+  it('treats duplicate child-session ownership as an error', async () => {
+    loadSessionMap.mockResolvedValueOnce({
+      version: 1 as const,
+      sessionsByTicket: {
+        A1: {
+          sessionId: 'jules-296',
+          lastState: 'in_progress' as const,
+          lastSeenAt: '2026-03-15T20:00:00.000Z',
+          activeRun: {
+            requestId: 'req-1',
+            runId: 'run-1',
+            status: 'started' as const,
+            sentAt: '2026-03-15T20:00:00.000Z',
+            waitTimeoutSeconds: 3600,
+            sessionKey: 'agent:kanban-workflow-worker:subagent:child-dup',
+          },
+        },
+        A2: {
+          sessionId: 'jules-297',
+          lastState: 'in_progress' as const,
+          lastSeenAt: '2026-03-15T20:00:00.000Z',
+          activeRun: {
+            requestId: 'req-2',
+            runId: 'run-2',
+            status: 'started' as const,
+            sentAt: '2026-03-15T20:00:00.000Z',
+            waitTimeoutSeconds: 3600,
+            sessionKey: 'agent:kanban-workflow-worker:subagent:child-dup',
+          },
+        },
+      },
+    } as any);
+
+    const result = await runSubagentCompletionReconciler({
+      adapter: {} as any,
+      childSessionKey: 'agent:kanban-workflow-worker:subagent:child-dup',
+      dispatchRunId: 'dispatch-dup',
+      workerAgentId: 'kanban-workflow-worker',
+      workerRuntimeOptions: {
+        delegationDir: '.tmp/test-delegations',
+        defaultSyncTimeoutMs: 30_000,
+        defaultBackgroundTimeoutMs: 60_000,
+        requesterSessionKey: 'agent:kanban-workflow-workflow-loop:main',
+        isBackgroundDelegationAllowed: () => false,
+      },
+    });
+
+    expect(result).toEqual({ quiet: true, exitCode: 1, reason: 'ambiguous' });
     expect(runDelegationReconciler).not.toHaveBeenCalled();
   });
 });

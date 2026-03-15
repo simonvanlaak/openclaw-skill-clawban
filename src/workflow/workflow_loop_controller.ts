@@ -6,6 +6,7 @@ import {
   type SessionMap,
   type WorkerCommandResult,
 } from '../automation/session_dispatcher.js';
+import { randomUUID } from 'node:crypto';
 import { shouldQuietPollAfterCarryForward } from './decision_policy.js';
 import {
   runWorkflowLoopHousekeeping,
@@ -92,6 +93,23 @@ export async function runWorkflowLoopController(params: {
     return created;
   };
 
+  const ensureSpawnRequest = async (ticketId: string, sessionId: string): Promise<SessionEntry> => {
+    const entry = ensureSessionEntry(ticketId, sessionId);
+    if (entry.activeRun?.status === 'started' && entry.activeRun.sessionKey && entry.activeRun.runId) {
+      return entry;
+    }
+    if (entry.activeRun?.status !== 'spawn_requested') {
+      entry.activeRun = {
+        requestId: randomUUID(),
+        status: 'spawn_requested',
+        sentAt: new Date().toISOString(),
+        waitTimeoutSeconds: Math.max(1, Math.ceil(workerRuntimeOptions.defaultBackgroundTimeoutMs / 1000)),
+      };
+      await saveSessionMap(plan.map, params.mapPath);
+    }
+    return entry;
+  };
+
   const recordCompletedWorkDuration = (ticketId: string, completedAt: Date): void => {
     const entry = plan.map.sessionsByTicket?.[ticketId];
     const startedAtIso = entry?.workStartedAt;
@@ -167,6 +185,9 @@ export async function runWorkflowLoopController(params: {
         }
       }
 
+      const entry = action.kind === 'work'
+        ? await ensureSpawnRequest(action.ticketId, action.sessionId)
+        : undefined;
       const dispatched = await dispatchWorkerTurn({
         ticketId: action.ticketId,
         projectId: action.projectId,
@@ -175,13 +196,17 @@ export async function runWorkflowLoopController(params: {
         sessionId: action.sessionId,
         text: action.text,
         thinking: 'high',
+        idempotencyKey: entry?.activeRun?.requestId,
       }, workerRuntimeOptions);
 
       if (action.kind !== 'work') continue;
 
       if (dispatched.kind === 'delegated') {
-        const entry = ensureSessionEntry(action.ticketId, action.sessionId);
+        if (!entry) {
+          throw new Error(`missing active session entry for ticket ${action.ticketId}`);
+        }
         entry.activeRun = {
+          requestId: dispatched.requestId,
           runId: dispatched.runId,
           status: 'started',
           sentAt: dispatched.startedAt,
@@ -189,6 +214,7 @@ export async function runWorkflowLoopController(params: {
           sessionKey: dispatched.sessionKey,
         };
         markSessionInProgress(plan.map, action.ticketId, new Date());
+        await saveSessionMap(plan.map, params.mapPath);
         execution.push({
           sessionId: action.sessionId,
           ticketId: action.ticketId,

@@ -334,6 +334,7 @@ describe('worker runtime terminal assistant reply detection', () => {
           lastState: 'in_progress',
           lastSeenAt: '2026-03-15T12:00:00.000Z',
           activeRun: {
+            requestId: 'req-1',
             runId: 'run-1',
             status: 'started',
             sentAt: '2026-03-15T12:00:00.000Z',
@@ -407,6 +408,7 @@ describe('worker runtime terminal assistant reply detection', () => {
           lastState: 'in_progress',
           lastSeenAt: '2026-03-15T12:10:00.000Z',
           activeRun: {
+            requestId: 'req-2',
             runId: 'run-2',
             status: 'started',
             sentAt: '2026-03-15T12:10:00.000Z',

@@ -10,7 +10,7 @@ export type SubagentCompletionReconcileResult =
   | {
       quiet: true;
       exitCode: number;
-      reason: 'not_found' | 'not_worker_subagent';
+      reason: 'not_found' | 'not_worker_subagent' | 'ambiguous';
     }
   | {
       quiet: false;
@@ -33,15 +33,19 @@ export function findTicketByChildSessionKey(
   map: Awaited<ReturnType<typeof loadSessionMap>>,
   childSessionKey: string,
 ): { ticketId: string; sessionId: string } | null {
+  let match: { ticketId: string; sessionId: string } | null = null;
   for (const [ticketId, entry] of Object.entries(map.sessionsByTicket ?? {})) {
     if (!entry || typeof entry !== 'object') continue;
     if (entry.activeRun?.status !== 'started') continue;
     if (String(entry.activeRun.sessionKey ?? '').trim() !== childSessionKey.trim()) continue;
     const sessionId = String(entry.sessionId ?? '').trim();
     if (!sessionId) continue;
-    return { ticketId, sessionId };
+    if (match) {
+      throw new Error(`Multiple tickets reference child session ${childSessionKey}`);
+    }
+    match = { ticketId, sessionId };
   }
-  return null;
+  return match;
 }
 
 export async function runSubagentCompletionReconciler(params: {
@@ -58,7 +62,12 @@ export async function runSubagentCompletionReconciler(params: {
   }
 
   const map = await loadSessionMap(params.mapPath);
-  const match = findTicketByChildSessionKey(map, params.childSessionKey);
+  let match: { ticketId: string; sessionId: string } | null = null;
+  try {
+    match = findTicketByChildSessionKey(map, params.childSessionKey);
+  } catch {
+    return { quiet: true, exitCode: 1, reason: 'ambiguous' };
+  }
   if (!match) {
     return { quiet: true, exitCode: 0, reason: 'not_found' };
   }

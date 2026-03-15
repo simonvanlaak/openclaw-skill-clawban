@@ -116,10 +116,11 @@ describe('workflow_loop_controller', () => {
       }),
     ).rejects.toThrow('gateway unavailable');
 
-    expect(saveSessionMap).toHaveBeenCalledTimes(1);
-    const persistedMap = (saveSessionMap.mock.calls[0] as any)?.[0];
+    expect(saveSessionMap).toHaveBeenCalledTimes(2);
+    const persistedMap = (saveSessionMap.mock.calls[1] as any)?.[0];
     expect(persistedMap?.active).toEqual({ ticketId: 'A1', sessionId: 'a1' });
     expect(persistedMap?.sessionsByTicket?.A1?.lastState).toBe('reserved');
+    expect(persistedMap?.sessionsByTicket?.A1?.activeRun?.status).toBe('spawn_requested');
   });
 
   it('heals a carried-forward ticket from a fresh worker decision comment without redispatching', async () => {
@@ -246,6 +247,7 @@ describe('workflow_loop_controller', () => {
     });
     (dispatchWorkerTurn as any).mockResolvedValueOnce({
       kind: 'delegated',
+      requestId: 'req-2',
       runId: 'run-2',
       startedAt: '2026-03-15T18:11:00.000Z',
       waitTimeoutSeconds: 3600,
