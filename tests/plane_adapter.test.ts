@@ -892,6 +892,74 @@ describe('PlaneAdapter', () => {
     }
   });
 
+  it('renders @mentions as Plane mention-component markup in comment_html', async () => {
+    const oldKey = process.env.PLANE_API_KEY;
+    const oldBase = process.env.PLANE_BASE_URL;
+    process.env.PLANE_API_KEY = 'test-key';
+    process.env.PLANE_BASE_URL = 'https://plane.example';
+
+    (execa as any as ExecaMock).mockResolvedValueOnce({
+      stdout: JSON.stringify([
+        { id: 'user-123', display_name: 'simon.vanlaak' },
+      ]),
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => '',
+    });
+    vi.stubGlobal('fetch', fetchMock as any);
+
+    try {
+      const adapter = new PlaneAdapter({
+        workspaceSlug: 'ws',
+        projectId: 'proj',
+        stageMap: {
+          Doing: 'stage:in-progress',
+        },
+      });
+
+      await adapter.addComment('i9', 'cc @simon.vanlaak please review');
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://plane.example/api/v1/workspaces/ws/projects/proj/work-items/i9/comments/',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': 'test-key',
+          },
+          body: JSON.stringify({
+            comment_html:
+              '<p>cc <mention-component id="mention-user-123" entity_identifier="user-123" entity_name="user_mention"></mention-component> please review</p>',
+            comment_json: {
+              type: 'doc',
+              content: [
+                {
+                  type: 'paragraph',
+                  content: [
+                    { type: 'text', text: 'cc ' },
+                    { type: 'mention', attrs: { id: 'user-123', label: 'simon.vanlaak' } },
+                    { type: 'text', text: ' please review' },
+                  ],
+                },
+              ],
+            },
+          }),
+        },
+      );
+      expect((execa as any).mock.calls[0]?.[1]).toEqual(['-f', 'json', 'members']);
+    } finally {
+      vi.unstubAllGlobals();
+      if (oldKey == null) delete process.env.PLANE_API_KEY;
+      else process.env.PLANE_API_KEY = oldKey;
+      if (oldBase == null) delete process.env.PLANE_BASE_URL;
+      else process.env.PLANE_BASE_URL = oldBase;
+    }
+  });
+
   it('implements addLinks via Plane links API', async () => {
     const oldKey = process.env.PLANE_API_KEY;
     const oldBase = process.env.PLANE_BASE_URL;

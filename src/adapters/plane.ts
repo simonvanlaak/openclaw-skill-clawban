@@ -1035,17 +1035,19 @@ export class PlaneAdapter implements Adapter {
     // Render our normal safe HTML first.
     let html = this.renderCommentHtml(raw);
 
-    // Then replace known @display_name tokens with Plane mention markup.
-    // Note: Plane mentions are editor-specific; in our deployment a <span data-type="mention" ...>
-    // is rendered as an actual mention in the UI, while plain "@name" is just text.
+    // Plane's backend notification task extracts mentions by scanning comment_html for
+    // <mention-component entity_name="user_mention" entity_identifier="...">.
+    // Plain text or <span data-type="mention"> renders visually at best, but it does not
+    // trigger real mention notifications.
     const members = await this.getMembersByDisplayName();
     if (members.size === 0) return html;
 
     for (const [displayLower, id] of members.entries()) {
-      const display = displayLower; // already lower-case key
-      // We match case-insensitively but preserve the canonical display_name in the rendered label.
-      const pattern = new RegExp(`(^|[>\\s])@${this.escapeRegex(display)}(?=($|[\\s<.,;:!?)]))`, 'gi');
-      html = html.replace(pattern, `$1<span data-type="mention" data-id="${id}" data-label="${display}">@${display}</span>`);
+      const pattern = new RegExp(`(^|[>\\s])@${this.escapeRegex(displayLower)}(?=($|[\\s<.,;:!?)]))`, 'gi');
+      html = html.replace(
+        pattern,
+        `$1<mention-component id="mention-${id}" entity_identifier="${id}" entity_name="user_mention"></mention-component>`,
+      );
     }
 
     return html;
