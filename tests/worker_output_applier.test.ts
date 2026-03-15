@@ -62,7 +62,7 @@ describe('worker_output_applier', () => {
         action: { ticketId: 'A1', sessionId: 'jules-237', projectId: 'P1' },
         workerOutput: completedWorkerOutput(),
         dispatchRunId: 'dispatch-1',
-        workerAgentId: 'kanban-workflow-worker',
+        workerAgentId: 'main',
         workerRuntimeOptions: {
           delegationDir: '.tmp/test-delegations',
           defaultSyncTimeoutMs: 30_000,
@@ -115,7 +115,7 @@ describe('worker_output_applier', () => {
         action: { ticketId: 'A1', sessionId: 'jules-237', projectId: 'P1' },
         workerOutput: completedWorkerOutput(),
         dispatchRunId: 'dispatch-1',
-        workerAgentId: 'kanban-workflow-worker',
+        workerAgentId: 'main',
         workerRuntimeOptions: {
           delegationDir: '.tmp/test-delegations',
           defaultSyncTimeoutMs: 30_000,
@@ -149,7 +149,7 @@ describe('worker_output_applier', () => {
       action: { ticketId: 'A1', sessionId: 'jules-237', projectId: 'P1' },
       workerOutput: completedWorkerOutput(),
       dispatchRunId: 'dispatch-2',
-      workerAgentId: 'kanban-workflow-worker',
+      workerAgentId: 'main',
       workerRuntimeOptions: {
         delegationDir: '.tmp/test-delegations',
         defaultSyncTimeoutMs: 30_000,

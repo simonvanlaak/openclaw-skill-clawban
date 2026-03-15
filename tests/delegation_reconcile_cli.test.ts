@@ -71,7 +71,7 @@ describe('reconcile-delegation cli', () => {
     expect(reconcileArgs).toMatchObject({
       ticketId: 'A1',
       sessionId: 'jules-281',
-      workerAgentId: 'kanban-workflow-worker',
+      workerAgentId: 'main',
     });
     expect(cap.out.join('')).toContain('"delegationReconcile"');
   });

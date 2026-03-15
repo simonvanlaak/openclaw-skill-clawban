@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 
 function isWorkerChildSessionKey(value) {
-  return typeof value === "string" && value.startsWith("agent:kanban-workflow-worker:subagent:");
+  return typeof value === "string" && value.startsWith("agent:main:subagent:");
 }
 
 export default async function kwfSubagentEnded(event) {

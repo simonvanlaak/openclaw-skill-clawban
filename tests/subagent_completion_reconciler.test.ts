@@ -17,7 +17,7 @@ const {
           status: 'started' as const,
           sentAt: '2026-03-15T20:00:00.000Z',
           waitTimeoutSeconds: 3600,
-          sessionKey: 'agent:kanban-workflow-worker:subagent:child-296',
+          sessionKey: 'agent:main:subagent:child-296',
         },
       },
     },
@@ -64,7 +64,7 @@ describe('subagent_completion_reconciler', () => {
 
   it('finds the active ticket that owns a child session key', async () => {
     const map = await loadSessionMap();
-    expect(findTicketByChildSessionKey(map, 'agent:kanban-workflow-worker:subagent:child-296')).toEqual({
+    expect(findTicketByChildSessionKey(map, 'agent:main:subagent:child-296')).toEqual({
       ticketId: 'A1',
       sessionId: 'jules-296',
     });
@@ -74,9 +74,9 @@ describe('subagent_completion_reconciler', () => {
     const adapter = { setStage: vi.fn(), addComment: vi.fn() };
     const result = await runSubagentCompletionReconciler({
       adapter: adapter as any,
-      childSessionKey: 'agent:kanban-workflow-worker:subagent:child-296',
+      childSessionKey: 'agent:main:subagent:child-296',
       dispatchRunId: 'dispatch-296',
-      workerAgentId: 'kanban-workflow-worker',
+      workerAgentId: 'main',
       workerRuntimeOptions: {
         delegationDir: '.tmp/test-delegations',
         defaultSyncTimeoutMs: 30_000,
@@ -91,16 +91,16 @@ describe('subagent_completion_reconciler', () => {
     expect((runDelegationReconciler.mock.calls as unknown as Array<[any]>)[0]?.[0]).toMatchObject({
       ticketId: 'A1',
       sessionId: 'jules-296',
-      workerAgentId: 'kanban-workflow-worker',
+      workerAgentId: 'main',
     });
   });
 
   it('ignores unrelated non-worker subagent sessions', async () => {
     const result = await runSubagentCompletionReconciler({
       adapter: {} as any,
-      childSessionKey: 'agent:main:subagent:child-1',
+      childSessionKey: 'agent:kanban-workflow-worker:subagent:child-1',
       dispatchRunId: 'dispatch-x',
-      workerAgentId: 'kanban-workflow-worker',
+      workerAgentId: 'main',
       workerRuntimeOptions: {
         delegationDir: '.tmp/test-delegations',
         defaultSyncTimeoutMs: 30_000,
@@ -128,7 +128,7 @@ describe('subagent_completion_reconciler', () => {
             status: 'started' as const,
             sentAt: '2026-03-15T20:00:00.000Z',
             waitTimeoutSeconds: 3600,
-            sessionKey: 'agent:kanban-workflow-worker:subagent:child-dup',
+            sessionKey: 'agent:main:subagent:child-dup',
           },
         },
         A2: {
@@ -141,7 +141,7 @@ describe('subagent_completion_reconciler', () => {
             status: 'started' as const,
             sentAt: '2026-03-15T20:00:00.000Z',
             waitTimeoutSeconds: 3600,
-            sessionKey: 'agent:kanban-workflow-worker:subagent:child-dup',
+            sessionKey: 'agent:main:subagent:child-dup',
           },
         },
       },
@@ -149,9 +149,9 @@ describe('subagent_completion_reconciler', () => {
 
     const result = await runSubagentCompletionReconciler({
       adapter: {} as any,
-      childSessionKey: 'agent:kanban-workflow-worker:subagent:child-dup',
+      childSessionKey: 'agent:main:subagent:child-dup',
       dispatchRunId: 'dispatch-dup',
-      workerAgentId: 'kanban-workflow-worker',
+      workerAgentId: 'main',
       workerRuntimeOptions: {
         delegationDir: '.tmp/test-delegations',
         defaultSyncTimeoutMs: 30_000,

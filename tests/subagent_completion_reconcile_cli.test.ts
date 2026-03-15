@@ -6,7 +6,7 @@ const { runSubagentCompletionReconciler } = vi.hoisted(() => ({
     exitCode: 0,
     payload: {
       subagentCompletionReconcile: {
-        childSessionKey: 'agent:kanban-workflow-worker:subagent:child-296',
+        childSessionKey: 'agent:main:subagent:child-296',
         ticketId: 'A1',
         sessionId: 'jules-296',
         delegation: {
@@ -70,15 +70,15 @@ describe('reconcile-subagent-ended cli', () => {
     const { io, cap } = createIo();
 
     const code = await runCli(
-      ['reconcile-subagent-ended', '--child-session-key', 'agent:kanban-workflow-worker:subagent:child-296'],
+      ['reconcile-subagent-ended', '--child-session-key', 'agent:main:subagent:child-296'],
       io,
     );
 
     expect(code).toBe(0);
     expect(runSubagentCompletionReconciler).toHaveBeenCalledOnce();
     expect((runSubagentCompletionReconciler.mock.calls as unknown as Array<[any]>)[0]?.[0]).toMatchObject({
-      childSessionKey: 'agent:kanban-workflow-worker:subagent:child-296',
-      workerAgentId: 'kanban-workflow-worker',
+      childSessionKey: 'agent:main:subagent:child-296',
+      workerAgentId: 'main',
     });
     expect(cap.out.join('')).toContain('"subagentCompletionReconcile"');
   });

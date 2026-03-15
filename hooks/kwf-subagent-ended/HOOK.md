@@ -13,5 +13,5 @@ metadata:
 
 # KWF Subagent Ended
 
-Runs KWF reconciliation immediately when a `kanban-workflow-worker` spawned
+Runs KWF reconciliation immediately when a `main` spawned
 subagent ends.

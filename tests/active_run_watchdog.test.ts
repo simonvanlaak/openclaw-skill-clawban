@@ -59,7 +59,7 @@ describe('active_run_watchdog', () => {
             status: 'started' as const,
             sentAt: '2026-03-15T21:00:00.000Z',
             waitTimeoutSeconds: 3600,
-            sessionKey: 'agent:kanban-workflow-worker:subagent:child-300',
+            sessionKey: 'agent:main:subagent:child-300',
           },
         },
       },
@@ -70,17 +70,17 @@ describe('active_run_watchdog', () => {
         ticketId: 'A1',
         dispatchRunId: 'spawn',
         sessionId: 'jules-300',
-        agentId: 'kanban-workflow-worker',
+        agentId: 'main',
         thinking: 'high',
         startedAt: '2026-03-15T21:00:00.000Z',
         runId: 'run-300',
-        sessionKey: 'agent:kanban-workflow-worker:subagent:child-300',
+        sessionKey: 'agent:main:subagent:child-300',
         runTimeoutSeconds: 3600,
       },
       workerOutput: '{"decision":"completed"}',
       raw: '{"decision":"completed"}',
       routing: {
-        sessionKey: 'agent:kanban-workflow-worker:subagent:child-300',
+        sessionKey: 'agent:main:subagent:child-300',
       },
     });
     runDelegationReconciler.mockResolvedValue({
@@ -92,7 +92,7 @@ describe('active_run_watchdog', () => {
     const result = await runActiveRunWatchdog({
       adapter: {} as any,
       dispatchRunId: 'dispatch-watchdog',
-      workerAgentId: 'kanban-workflow-worker',
+      workerAgentId: 'main',
       workerRuntimeOptions: {
         delegationDir: '.tmp/test-delegations',
         defaultSyncTimeoutMs: 30_000,
@@ -132,7 +132,7 @@ describe('active_run_watchdog', () => {
             status: 'started' as const,
             sentAt: '2026-03-15T19:00:00.000Z',
             waitTimeoutSeconds: 3600,
-            sessionKey: 'agent:kanban-workflow-worker:subagent:child-302',
+            sessionKey: 'agent:main:subagent:child-302',
           },
         },
       },
@@ -143,11 +143,11 @@ describe('active_run_watchdog', () => {
         ticketId: 'A2',
         dispatchRunId: 'spawn',
         sessionId: 'jules-302',
-        agentId: 'kanban-workflow-worker',
+        agentId: 'main',
         thinking: 'high',
         startedAt: '2026-03-15T19:00:00.000Z',
         runId: 'run-302',
-        sessionKey: 'agent:kanban-workflow-worker:subagent:child-302',
+        sessionKey: 'agent:main:subagent:child-302',
         runTimeoutSeconds: 3600,
       },
     });
@@ -155,7 +155,7 @@ describe('active_run_watchdog', () => {
     const result = await runActiveRunWatchdog({
       adapter: {} as any,
       dispatchRunId: 'dispatch-watchdog',
-      workerAgentId: 'kanban-workflow-worker',
+      workerAgentId: 'main',
       workerRuntimeOptions: {
         delegationDir: '.tmp/test-delegations',
         defaultSyncTimeoutMs: 30_000,

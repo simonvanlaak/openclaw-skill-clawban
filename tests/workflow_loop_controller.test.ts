@@ -106,7 +106,7 @@ describe('workflow_loop_controller', () => {
         previousMap,
         dryRun: false,
         dispatchRunId: 'dispatch-1',
-        workerAgentId: 'kanban-workflow-worker',
+        workerAgentId: 'main',
         workerRuntimeOptions: {
           delegationDir: '.tmp/test-delegations',
           defaultSyncTimeoutMs: 30_000,
@@ -175,7 +175,7 @@ describe('workflow_loop_controller', () => {
       previousMap,
       dryRun: false,
       dispatchRunId: 'dispatch-2',
-      workerAgentId: 'kanban-workflow-worker',
+      workerAgentId: 'main',
       workerRuntimeOptions: {
         delegationDir: '.tmp/test-delegations',
         defaultSyncTimeoutMs: 30_000,
@@ -251,7 +251,7 @@ describe('workflow_loop_controller', () => {
       runId: 'run-2',
       startedAt: '2026-03-15T18:11:00.000Z',
       waitTimeoutSeconds: 3600,
-      sessionKey: 'agent:kanban-workflow-worker:b1',
+      sessionKey: 'agent:main:b1',
       notice: 'delegated',
     });
 
@@ -261,7 +261,7 @@ describe('workflow_loop_controller', () => {
       previousMap,
       dryRun: false,
       dispatchRunId: 'dispatch-3',
-      workerAgentId: 'kanban-workflow-worker',
+      workerAgentId: 'main',
       workerRuntimeOptions: {
         delegationDir: '.tmp/test-delegations',
         defaultSyncTimeoutMs: 30_000,

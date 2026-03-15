@@ -92,7 +92,7 @@ function writeHelp(io: CliIo): void {
 const PLANE_ENV_HELPER = '/root/.openclaw/workspace/scripts/plane_env.sh';
 const WORKFLOW_LOOP_AGENT_ID = 'kanban-workflow-workflow-loop';
 const WORKFLOW_LOOP_REQUESTER_SESSION_ID = 'kwf-control';
-const WORKER_AGENT_ID = 'kanban-workflow-worker';
+const WORKER_AGENT_ID = process.env.KWF_WORKER_AGENT_ID?.trim() || 'main';
 const WORKER_DELEGATION_DIR = '.tmp/kwf-worker-delegations';
 const DEFAULT_WORKER_SYNC_TIMEOUT_MS = 30_000;
 const DEFAULT_WORKER_BACKGROUND_TIMEOUT_MS = 15 * 60_000;

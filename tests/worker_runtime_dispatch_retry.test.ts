@@ -35,7 +35,7 @@ describe('worker runtime dispatch retries', () => {
             result: {
               details: {
                 runId: 'retry-send',
-                childSessionKey: 'agent:kanban-workflow-worker:subagent:retry-send',
+                childSessionKey: 'agent:main:subagent:retry-send',
                 status: 'accepted',
               },
             },
@@ -50,7 +50,7 @@ describe('worker runtime dispatch retries', () => {
         {
           ticketId: 'ticket-1',
           dispatchRunId: 'dispatch-1',
-          agentId: 'kanban-workflow-worker',
+          agentId: 'main',
           sessionId: 'jules-267',
           text: 'do the work',
           thinking: 'high',
@@ -61,7 +61,7 @@ describe('worker runtime dispatch retries', () => {
       kind: 'delegated',
       requestId: expect.any(String),
       runId: 'retry-send',
-      sessionKey: 'agent:kanban-workflow-worker:subagent:retry-send',
+      sessionKey: 'agent:main:subagent:retry-send',
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -92,7 +92,7 @@ describe('worker runtime dispatch retries', () => {
         {
           ticketId: 'ticket-2',
           dispatchRunId: 'dispatch-2',
-          agentId: 'kanban-workflow-worker',
+          agentId: 'main',
           sessionId: 'jules-268',
           text: 'do the work',
           thinking: 'high',

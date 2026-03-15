@@ -469,7 +469,7 @@ function entryToDelegationMeta(ticketId: string, entry: SessionEntry): WorkerDel
     ticketId,
     dispatchRunId: 'spawn',
     sessionId: entry.sessionId,
-    agentId: parseAgentIdFromSessionKey(entry.activeRun.sessionKey) ?? 'kanban-workflow-worker',
+    agentId: parseAgentIdFromSessionKey(entry.activeRun.sessionKey) ?? 'main',
     thinking: 'high',
     startedAt: entry.activeRun.sentAt,
     runId: entry.activeRun.runId,
