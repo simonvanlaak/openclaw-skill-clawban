@@ -32,6 +32,10 @@ export type WorkflowLifecycleAdapter = {
   setStage(id: string, stage: string): Promise<void>;
   addLinks?(id: string, links: ExternalLinkInput[]): Promise<void>;
   getStakeholderMentions?(ticketId: string): Promise<string[]>;
+  listComments?(
+    id: string,
+    opts: { limit?: number; newestFirst: boolean; includeInternal: boolean },
+  ): Promise<WorkItemComment[]>;
 };
 
 export type WorkflowHousekeepingAdapter = {

@@ -94,8 +94,8 @@ describe('delegation_reconciler', () => {
     const addCommentCalls = adapter.addComment.mock.calls as unknown as Array<[string, string]>;
     expect(addCommentCalls[0]?.[1]).toContain('Worker decision: completed');
     expect(adapter.setStage).toHaveBeenCalledWith('A1', 'stage:in-review');
-    expect(saveSessionMap).toHaveBeenCalledOnce();
-    const persistedMap = ((saveSessionMap.mock.calls as unknown as Array<[any]>)[0]?.[0]);
+    expect(saveSessionMap.mock.calls.length).toBeGreaterThanOrEqual(1);
+    const persistedMap = ((saveSessionMap.mock.calls as unknown as Array<[any]>).at(-1)?.[0]);
     expect(persistedMap).toBeTruthy();
     expect(persistedMap.active).toBeUndefined();
     expect(persistedMap.sessionsByTicket.A1.lastState).toBe('completed');

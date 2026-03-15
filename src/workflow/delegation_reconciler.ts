@@ -119,9 +119,8 @@ export async function runDelegationReconciler(params: {
     detailPrefix: 'source=background-delegation-event',
     routing: delegationState.routing,
     onCompleted: (ticketId, completedAt) => recordCompletedWorkDuration(map, ticketId, completedAt),
+    persistMap: async (nextMap) => saveSessionMap(nextMap, params.mapPath),
   });
-
-  await saveSessionMap(map, params.mapPath);
 
   return {
     quiet: false,

@@ -30,6 +30,17 @@ export type SessionEntry = {
   workStartedAt?: string;
   closedAt?: string;
   continueCount?: number;
+  pendingMutation?: {
+    kind: 'worker_result';
+    decision: 'completed' | 'blocked';
+    commentBody: string;
+    targetStage: 'stage:in-review' | 'stage:blocked';
+    links?: Array<{ title: string; url: string }>;
+    createdAt: string;
+    commentAppliedAt?: string;
+    stageAppliedAt?: string;
+    linksAppliedAt?: string;
+  };
 };
 
 export type SessionMap = {
@@ -450,6 +461,7 @@ export function applyWorkerCommandToSessionMap(
     entry.continueCount = (entry.continueCount ?? 0) + 1;
     if (!entry.workStartedAt) entry.workStartedAt = nowIso;
     delete entry.closedAt;
+    delete entry.pendingMutation;
     map.active = { ticketId, sessionId: entry.sessionId };
     return map;
   }
@@ -461,6 +473,7 @@ export function applyWorkerCommandToSessionMap(
     delete entry.closedAt;
     delete entry.workStartedAt;
   }
+  delete entry.pendingMutation;
   if (map.active?.ticketId === ticketId) {
     map.active = undefined;
   }

@@ -1,9 +1,11 @@
 import {
   applyWorkerCommandToSessionMap,
   markSessionInProgress,
+  type SessionEntry,
   type SessionMap,
   type WorkerCommandResult,
 } from '../automation/session_dispatcher.js';
+import type { ExternalLinkInput } from '../verbs/types.js';
 import { buildRetryPrompt } from './ticket_runtime.js';
 import {
   formatForcedBlockedComment,
@@ -23,6 +25,17 @@ export type WorkerExecutionOutcome = {
   workerOutput: string;
   outcome: 'applied' | 'mutation_error' | 'delegated_started';
   detail?: string;
+};
+
+type PersistMapFn = (map: SessionMap) => Promise<void>;
+
+type WorkerMutationPlan = {
+  parsed: WorkerCommandResult;
+  decision: 'completed' | 'blocked';
+  commentBody: string;
+  targetStage: 'stage:in-review' | 'stage:blocked';
+  links: ExternalLinkInput[];
+  detail: string;
 };
 
 function buildSessionRoutingWarning(
@@ -47,6 +60,75 @@ function buildSessionRoutingWarning(
     .join('; ');
 }
 
+function ensureSessionEntry(map: SessionMap, ticketId: string, sessionId: string): SessionEntry {
+  if (!map.sessionsByTicket) {
+    map.sessionsByTicket = {};
+  }
+  const nowIso = new Date().toISOString();
+  const existing = map.sessionsByTicket[ticketId];
+  if (existing) return existing;
+
+  const created: SessionEntry = {
+    sessionId,
+    lastState: 'in_progress',
+    lastSeenAt: nowIso,
+    workStartedAt: nowIso,
+  };
+  map.sessionsByTicket[ticketId] = created;
+  return created;
+}
+
+function buildWorkerMutationPlan(params: {
+  parsed: WorkerCommandResult;
+  detail: string;
+  workerLinks?: ExternalLinkInput[];
+}): WorkerMutationPlan {
+  if (params.parsed.kind === 'completed') {
+    return {
+      parsed: params.parsed,
+      decision: 'completed',
+      commentBody: params.parsed.result,
+      targetStage: 'stage:in-review',
+      links: params.workerLinks ?? [],
+      detail: params.detail,
+    };
+  }
+
+  return {
+    parsed: params.parsed.kind === 'uncertain'
+      ? { kind: 'blocked', text: params.parsed.text }
+      : params.parsed,
+    decision: 'blocked',
+    commentBody: params.parsed.text,
+    targetStage: 'stage:blocked',
+    links: [],
+    detail: params.detail,
+  };
+}
+
+async function persistMapStep(persistMap: PersistMapFn | undefined, map: SessionMap): Promise<void> {
+  if (!persistMap) return;
+  await persistMap(map);
+}
+
+async function hasExistingCommentMatch(params: {
+  adapter: WorkflowLifecycleAdapter;
+  ticketId: string;
+  commentBody: string;
+}): Promise<boolean> {
+  if (typeof params.adapter.listComments !== 'function') return false;
+  try {
+    const comments = await params.adapter.listComments(params.ticketId, {
+      limit: 10,
+      newestFirst: true,
+      includeInternal: true,
+    });
+    return comments.some((comment) => String(comment.body ?? '').trim() === params.commentBody.trim());
+  } catch {
+    return false;
+  }
+}
+
 export async function applyWorkerOutputToTicket(params: {
   adapter: WorkflowLifecycleAdapter;
   map: SessionMap;
@@ -58,6 +140,7 @@ export async function applyWorkerOutputToTicket(params: {
   detailPrefix?: string;
   routing?: { sessionKey?: string; sessionId?: string; agentSessionId?: string };
   onCompleted?(ticketId: string, completedAt: Date): void;
+  persistMap?: PersistMapFn;
 }): Promise<WorkerExecutionOutcome> {
   const {
     adapter,
@@ -70,6 +153,7 @@ export async function applyWorkerOutputToTicket(params: {
     detailPrefix,
     routing,
     onCompleted,
+    persistMap,
   } = params;
 
   let payload = workerOutput;
@@ -128,48 +212,103 @@ export async function applyWorkerOutputToTicket(params: {
     detail = `decision=blocked; retryCount=${retryCount}`;
   }
 
-  const workerLinks = validation.ok ? validation.value.links : undefined;
+  const workerLinks = validation.ok ? validation.value.links : [];
 
   try {
-    if (parsed.kind === 'completed') {
-      let commentText = parsed.result;
-      if (typeof adapter.getStakeholderMentions === 'function') {
-        const mentions: string[] = await adapter.getStakeholderMentions(action.ticketId);
-        if (mentions.length > 0) {
-          commentText += `\n\ncc ${mentions.join(' ')} - ready for review.`;
-        }
-      }
-      await adapter.addComment(action.ticketId, commentText);
-      await adapter.setStage(action.ticketId, 'stage:in-review');
-    } else {
-      let askText = parsed.text;
-      if (typeof adapter.getStakeholderMentions === 'function') {
-        const mentions: string[] = await adapter.getStakeholderMentions(action.ticketId);
-        if (mentions.length > 0) {
+    let effectiveParsed = parsed;
+    let effectiveCommentBody: string;
+    let mentionSuffix = '';
+    if (typeof adapter.getStakeholderMentions === 'function') {
+      const mentions: string[] = await adapter.getStakeholderMentions(action.ticketId);
+      if (mentions.length > 0) {
+        if (parsed.kind === 'completed') {
+          mentionSuffix = `\n\ncc ${mentions.join(' ')} - ready for review.`;
+        } else {
           const verb = parsed.kind === 'blocked' ? 'blocked, needs input' : 'needs clarification';
-          askText += `\n\ncc ${mentions.join(' ')} - ${verb}.`;
+          mentionSuffix = `\n\ncc ${mentions.join(' ')} - ${verb}.`;
         }
       }
-      await adapter.addComment(action.ticketId, askText);
-      await adapter.setStage(action.ticketId, 'stage:blocked');
     }
 
-    if (Array.isArray(workerLinks) && workerLinks.length > 0 && typeof adapter.addLinks === 'function') {
-      await adapter.addLinks(action.ticketId, workerLinks);
+    if (mentionSuffix) {
+      if (parsed.kind === 'completed') {
+        effectiveParsed = { kind: 'completed', result: `${parsed.result}${mentionSuffix}` };
+      } else {
+        effectiveParsed = { kind: parsed.kind, text: `${parsed.text}${mentionSuffix}` };
+      }
+    }
+
+    const mutationPlan = buildWorkerMutationPlan({
+      parsed: effectiveParsed,
+      detail,
+      workerLinks,
+    });
+    effectiveCommentBody = mutationPlan.commentBody;
+
+    const entry = ensureSessionEntry(map, action.ticketId, action.sessionId);
+    const pending = entry.pendingMutation;
+    const reusePending = pending
+      && pending.kind === 'worker_result'
+      && pending.decision === mutationPlan.decision
+      && pending.commentBody === mutationPlan.commentBody
+      && pending.targetStage === mutationPlan.targetStage;
+
+    if (!reusePending) {
+      entry.pendingMutation = {
+        kind: 'worker_result',
+        decision: mutationPlan.decision,
+        commentBody: mutationPlan.commentBody,
+        targetStage: mutationPlan.targetStage,
+        links: mutationPlan.links,
+        createdAt: new Date().toISOString(),
+      };
+      await persistMapStep(persistMap, map);
+    }
+
+    const currentPending = entry.pendingMutation!;
+    if (!currentPending.commentAppliedAt) {
+      const alreadyVisible = await hasExistingCommentMatch({
+        adapter,
+        ticketId: action.ticketId,
+        commentBody: currentPending.commentBody,
+      });
+      if (!alreadyVisible) {
+        await adapter.addComment(action.ticketId, currentPending.commentBody);
+      }
+      currentPending.commentAppliedAt = new Date().toISOString();
+      await persistMapStep(persistMap, map);
+    }
+
+    if (!currentPending.stageAppliedAt) {
+      await adapter.setStage(action.ticketId, currentPending.targetStage);
+      currentPending.stageAppliedAt = new Date().toISOString();
+      await persistMapStep(persistMap, map);
+    }
+
+    if (
+      !currentPending.linksAppliedAt
+      && Array.isArray(currentPending.links)
+      && currentPending.links.length > 0
+      && typeof adapter.addLinks === 'function'
+    ) {
+      await adapter.addLinks(action.ticketId, currentPending.links);
+      currentPending.linksAppliedAt = new Date().toISOString();
+      await persistMapStep(persistMap, map);
     }
 
     const appliedAt = new Date();
-    if (parsed.kind === 'completed') {
+    if (mutationPlan.parsed.kind === 'completed') {
       onCompleted?.(action.ticketId, appliedAt);
     }
-    applyWorkerCommandToSessionMap(map, action.ticketId, parsed, appliedAt);
+    applyWorkerCommandToSessionMap(map, action.ticketId, mutationPlan.parsed, appliedAt);
+    await persistMapStep(persistMap, map);
     return {
       sessionId: action.sessionId,
       ticketId: action.ticketId,
-      parsed,
+      parsed: mutationPlan.parsed,
       workerOutput: payload,
       outcome: 'applied',
-      detail: [detailPrefix, detail, routingWarning].filter(Boolean).join('; '),
+      detail: [detailPrefix, mutationPlan.detail, routingWarning].filter(Boolean).join('; '),
     };
   } catch (err: any) {
     const execution: WorkerExecutionOutcome = {

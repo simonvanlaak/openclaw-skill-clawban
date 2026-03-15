@@ -138,6 +138,7 @@ export async function runWorkflowLoopController(params: {
             detailPrefix: 'source=background-delegation',
             routing: delegationState.routing,
             onCompleted: recordCompletedWorkDuration,
+            persistMap: async (nextMap) => saveSessionMap(nextMap, params.mapPath),
           }));
           continue;
         }
@@ -178,6 +179,7 @@ export async function runWorkflowLoopController(params: {
         workerRuntimeOptions,
         routing: dispatched.routing,
         onCompleted: recordCompletedWorkDuration,
+        persistMap: async (nextMap) => saveSessionMap(nextMap, params.mapPath),
       }));
     }
   }
