@@ -86,14 +86,12 @@ export async function runHumanCommentReconciler(params: {
     expectedTriggerCommentId: params.commentId,
     requeueTargetStage: params.requeueTargetStage,
     cursorPath: params.cursorPath,
+    persistMap: async (nextMap) => saveSessionMap(nextMap, params.mapPath),
   });
 
   if (reopened.actions.length === 0) {
     return { quiet: true, exitCode: 0, reason: 'no_action' };
   }
-
-  await saveSessionMap(map, params.mapPath);
-
   return {
     quiet: false,
     exitCode: 0,

@@ -46,6 +46,8 @@ type AutoReopenComment = {
   author?: { id?: string; username?: string; name?: string };
 };
 
+type PersistMapFn = (map: SessionMap) => Promise<void>;
+
 function normalizeActorKeys(actor?: { id?: string; username?: string; name?: string }): Set<string> {
   const keys = [actor?.id, actor?.username, actor?.name]
     .filter((v): v is string => Boolean(v && String(v).trim().length > 0))
@@ -171,6 +173,7 @@ export async function runAutoReopenForTicket(opts: {
   commentLimit?: number;
   requeueTargetStage?: StageKey;
   expectedTriggerCommentId?: string;
+  persistMap?: PersistMapFn;
 }): Promise<{ actions: AutoReopenAction[] }> {
   const cursorPath = opts.cursorPath ?? DEFAULT_AUTO_REOPEN_CURSOR_PATH;
   const includeInternal = opts.includeInternal ?? true;
@@ -203,9 +206,39 @@ export async function runAutoReopenForTicket(opts: {
       triggerCommentId,
     });
     if (!dryRun) {
-      await opts.adapter.setStage(opts.ticketId, requeueTargetStage);
       if (opts.map) {
+        const entry = opts.map.sessionsByTicket?.[opts.ticketId];
+        const existing = entry?.pendingMutation;
+        const reuseExisting = existing
+          && existing.kind === 'human_reopen'
+          && existing.fromStage === opts.fromStage
+          && existing.toStage === requeueTargetStage
+          && existing.triggerCommentId === triggerCommentId;
+
+        if (entry && !reuseExisting) {
+          entry.pendingMutation = {
+            kind: 'human_reopen',
+            fromStage: opts.fromStage,
+            toStage: requeueTargetStage,
+            triggerCommentId,
+            createdAt: new Date().toISOString(),
+          };
+          await opts.persistMap?.(opts.map);
+        }
+
+        const pending = entry?.pendingMutation;
+        if (pending?.kind === 'human_reopen' && !pending.stageAppliedAt) {
+          await opts.adapter.setStage(opts.ticketId, requeueTargetStage);
+          pending.stageAppliedAt = new Date().toISOString();
+          await opts.persistMap?.(opts.map);
+        } else if (!pending || pending.kind !== 'human_reopen') {
+          await opts.adapter.setStage(opts.ticketId, requeueTargetStage);
+        }
+
         markTicketQueued(opts.map, opts.ticketId, new Date());
+        await opts.persistMap?.(opts.map);
+      } else {
+        await opts.adapter.setStage(opts.ticketId, requeueTargetStage);
       }
     }
   }
@@ -226,6 +259,7 @@ export async function runAutoReopenOnHumanComment(opts: {
   includeInternal?: boolean;
   commentLimit?: number;
   requeueTargetStage?: StageKey;
+  persistMap?: PersistMapFn;
 }): Promise<{ actions: AutoReopenAction[] }> {
   const cursorPath = opts.cursorPath ?? DEFAULT_AUTO_REOPEN_CURSOR_PATH;
   const includeInternal = opts.includeInternal ?? true;
@@ -265,9 +299,39 @@ export async function runAutoReopenOnHumanComment(opts: {
       if (triggerCommentId) {
         actions.push({ ticketId: id, fromStage: stage, toStage: requeueTargetStage, triggerCommentId });
         if (!dryRun) {
-          await opts.adapter.setStage(id, requeueTargetStage);
           if (opts.map) {
+            const entry = opts.map.sessionsByTicket?.[id];
+            const existing = entry?.pendingMutation;
+            const reuseExisting = existing
+              && existing.kind === 'human_reopen'
+              && existing.fromStage === stage
+              && existing.toStage === requeueTargetStage
+              && existing.triggerCommentId === triggerCommentId;
+
+            if (entry && !reuseExisting) {
+              entry.pendingMutation = {
+                kind: 'human_reopen',
+                fromStage: stage,
+                toStage: requeueTargetStage,
+                triggerCommentId,
+                createdAt: new Date().toISOString(),
+              };
+              await opts.persistMap?.(opts.map);
+            }
+
+            const pending = entry?.pendingMutation;
+            if (pending?.kind === 'human_reopen' && !pending.stageAppliedAt) {
+              await opts.adapter.setStage(id, requeueTargetStage);
+              pending.stageAppliedAt = new Date().toISOString();
+              await opts.persistMap?.(opts.map);
+            } else if (!pending || pending.kind !== 'human_reopen') {
+              await opts.adapter.setStage(id, requeueTargetStage);
+            }
+
             markTicketQueued(opts.map, id, new Date());
+            await opts.persistMap?.(opts.map);
+          } else {
+            await opts.adapter.setStage(id, requeueTargetStage);
           }
         }
       }

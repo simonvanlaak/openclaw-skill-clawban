@@ -70,7 +70,8 @@ describe('human_comment_reconciler', () => {
     expect(result.payload.humanCommentReconcile.actions).toEqual([
       { ticketId: 'A1', fromStage: 'stage:blocked', toStage: 'stage:todo', triggerCommentId: 'c-human-1' },
     ]);
-    const persistedMap = ((saveSessionMap.mock.calls as unknown as Array<[any]>)[0]?.[0]);
+    expect(saveSessionMap.mock.calls.length).toBeGreaterThanOrEqual(1);
+    const persistedMap = ((saveSessionMap.mock.calls as unknown as Array<[any]>).at(-1)?.[0]);
     expect(persistedMap.sessionsByTicket.A1.lastState).toBe('queued');
   });
 

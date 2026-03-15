@@ -24,6 +24,7 @@ export function markTicketQueued(map: SessionMap, ticketId: string, now: Date): 
   delete entry.closedAt;
   delete entry.workStartedAt;
   delete entry.continueCount;
+  delete entry.pendingMutation;
 
   if (map.active?.ticketId === ticketId) {
     map.active = undefined;

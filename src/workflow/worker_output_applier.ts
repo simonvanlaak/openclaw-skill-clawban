@@ -265,7 +265,10 @@ export async function applyWorkerOutputToTicket(params: {
       await persistMapStep(persistMap, map);
     }
 
-    const currentPending = entry.pendingMutation!;
+    const currentPending = entry.pendingMutation;
+    if (!currentPending || currentPending.kind !== 'worker_result') {
+      throw new Error('worker result mutation missing after persistence');
+    }
     if (!currentPending.commentAppliedAt) {
       const alreadyVisible = await hasExistingCommentMatch({
         adapter,

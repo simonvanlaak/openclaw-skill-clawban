@@ -141,6 +141,7 @@ export async function runWorkflowLoopSelection(params: {
   dryRun: boolean;
   requeueTargetStage?: StageKey;
   workerRuntimeOptions?: WorkerRuntimeOptions;
+  persistMap?(map: SessionMap): Promise<void>;
 }): Promise<WorkflowLoopSelectionOutput> {
   const requeueTargetStage = params.requeueTargetStage ?? 'stage:todo';
   const autoReopen = await runAutoReopenOnHumanComment({
@@ -148,6 +149,7 @@ export async function runWorkflowLoopSelection(params: {
     map: params.map,
     dryRun: params.dryRun,
     requeueTargetStage,
+    persistMap: params.persistMap,
   });
   const me = await params.adapter.whoami();
   const inProgressIds: string[] = await params.adapter.listIdsByStage('stage:in-progress');

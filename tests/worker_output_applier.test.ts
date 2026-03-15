@@ -76,8 +76,12 @@ describe('worker_output_applier', () => {
     expect(adapter.addComment).toHaveBeenCalledOnce();
     expect(adapter.setStage).toHaveBeenCalledWith('A1', 'stage:in-review');
     expect(persistMap).toHaveBeenCalledTimes(2);
-    expect(map.sessionsByTicket.A1.pendingMutation?.commentAppliedAt).toBeTruthy();
-    expect(map.sessionsByTicket.A1.pendingMutation?.stageAppliedAt).toBeUndefined();
+    expect(map.sessionsByTicket.A1.pendingMutation?.kind).toBe('worker_result');
+    if (map.sessionsByTicket.A1.pendingMutation?.kind !== 'worker_result') {
+      throw new Error('expected worker_result pending mutation');
+    }
+    expect(map.sessionsByTicket.A1.pendingMutation.commentAppliedAt).toBeTruthy();
+    expect(map.sessionsByTicket.A1.pendingMutation.stageAppliedAt).toBeUndefined();
     expect(map.sessionsByTicket.A1.lastState).toBe('in_progress');
     expect(map.active).toEqual({ ticketId: 'A1', sessionId: 'jules-237' });
   });
@@ -122,7 +126,9 @@ describe('worker_output_applier', () => {
       }),
     ).rejects.toThrow('plane stage update failed');
 
-    const commentBody = map.sessionsByTicket.A1.pendingMutation?.commentBody;
+    const pending = map.sessionsByTicket.A1.pendingMutation;
+    expect(pending?.kind).toBe('worker_result');
+    const commentBody = pending?.kind === 'worker_result' ? pending.commentBody : undefined;
     expect(commentBody).toBeTruthy();
 
     const replayAdapter = {

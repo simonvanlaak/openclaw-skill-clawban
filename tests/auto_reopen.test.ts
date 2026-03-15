@@ -2,6 +2,7 @@ import * as fs from 'node:fs/promises';
 
 import { describe, expect, test, vi } from 'vitest';
 
+import type { SessionMap } from '../src/automation/session_dispatcher.js';
 import { runAutoReopenForTicket, runAutoReopenOnHumanComment } from '../src/automation/auto_reopen.js';
 
 function cursorPath(name: string): string {
@@ -11,7 +12,7 @@ function cursorPath(name: string): string {
 describe('auto-reopen on human comment', () => {
   test('moves blocked ticket back to backlog when a non-worker comment appears', async () => {
     const path = cursorPath('kwf-auto-reopen-blocked');
-    const map = {
+    const map: SessionMap = {
       version: 1 as const,
       sessionsByTicket: {
         'BL-1': {
@@ -190,7 +191,7 @@ describe('auto-reopen on human comment', () => {
 
   test('reopens a single ticket only when the explicit trigger comment is still current relative to worker decisions', async () => {
     const path = cursorPath('kwf-auto-reopen-single-ticket-trigger');
-    const map = {
+    const map: SessionMap = {
       version: 1 as const,
       sessionsByTicket: {
         'BL-8': {
@@ -233,6 +234,85 @@ describe('auto-reopen on human comment', () => {
     ]);
     expect(adapter.setStage).toHaveBeenCalledWith('BL-8', 'stage:todo');
     expect(map.sessionsByTicket['BL-8']?.lastState).toBe('queued');
+
+    await fs.rm(path, { force: true });
+  });
+
+  test('persists human reopen mutation progress when stage update fails and replays it without repeating the stage change', async () => {
+    const path = cursorPath('kwf-auto-reopen-replay');
+    const map: SessionMap = {
+      version: 1 as const,
+      sessionsByTicket: {
+        'BL-9': {
+          sessionId: 'bl-9',
+          lastState: 'blocked' as const,
+          lastSeenAt: '2026-03-15T15:00:00Z',
+          workStartedAt: '2026-03-15T14:00:00Z',
+        },
+      },
+    };
+    const persistMap = vi.fn(async () => undefined);
+    const failingAdapter = {
+      whoami: vi.fn(async () => ({ id: 'bot-1', username: 'kwf-bot', name: 'Jules Mercer' })),
+      listComments: vi.fn(async () => [
+        {
+          id: 'c-human-latest',
+          body: 'Please retry with the updated requirement.',
+          author: { id: 'human-1', username: 'alice' },
+        },
+      ]),
+      setStage: vi.fn(async () => {
+        throw new Error('plane stage update failed');
+      }),
+    };
+
+    await expect(
+      runAutoReopenForTicket({
+        adapter: failingAdapter,
+        ticketId: 'BL-9',
+        fromStage: 'stage:blocked',
+        map,
+        cursorPath: path,
+        expectedTriggerCommentId: 'c-human-latest',
+        persistMap,
+      }),
+    ).rejects.toThrow('plane stage update failed');
+
+    expect(map.sessionsByTicket['BL-9']?.pendingMutation).toMatchObject({
+      kind: 'human_reopen',
+      triggerCommentId: 'c-human-latest',
+      toStage: 'stage:todo',
+    });
+    expect(map.sessionsByTicket['BL-9']?.pendingMutation?.stageAppliedAt).toBeUndefined();
+
+    const replayAdapter = {
+      whoami: vi.fn(async () => ({ id: 'bot-1', username: 'kwf-bot', name: 'Jules Mercer' })),
+      listComments: vi.fn(async () => [
+        {
+          id: 'c-human-latest',
+          body: 'Please retry with the updated requirement.',
+          author: { id: 'human-1', username: 'alice' },
+        },
+      ]),
+      setStage: vi.fn(async () => undefined),
+    };
+
+    const replayed = await runAutoReopenForTicket({
+      adapter: replayAdapter,
+      ticketId: 'BL-9',
+      fromStage: 'stage:blocked',
+      map,
+      cursorPath: path,
+      expectedTriggerCommentId: 'c-human-latest',
+      persistMap,
+    });
+
+    expect(replayed.actions).toEqual([
+      { ticketId: 'BL-9', fromStage: 'stage:blocked', toStage: 'stage:todo', triggerCommentId: 'c-human-latest' },
+    ]);
+    expect(replayAdapter.setStage).toHaveBeenCalledTimes(1);
+    expect(map.sessionsByTicket['BL-9']?.lastState).toBe('queued');
+    expect(map.sessionsByTicket['BL-9']?.pendingMutation).toBeUndefined();
 
     await fs.rm(path, { force: true });
   });

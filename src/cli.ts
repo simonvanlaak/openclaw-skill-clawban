@@ -8,6 +8,7 @@ import { runSetup } from './setup.js';
 import { PlaneAdapter } from './adapters/plane.js';
 import {
   loadSessionMap,
+  saveSessionMap,
 } from './automation/session_dispatcher.js';
 import { archiveStaleBlockedWorkerSessions } from './workflow/ticket_runtime.js';
 import { type WorkerRuntimeOptions } from './workflow/worker_runtime.js';
@@ -406,6 +407,7 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
         dryRun,
         requeueTargetStage,
         workerRuntimeOptions: WORKER_RUNTIME_OPTIONS,
+        persistMap: async (nextMap) => saveSessionMap(nextMap),
       });
       const result = await runWorkflowLoopController({
         adapter,

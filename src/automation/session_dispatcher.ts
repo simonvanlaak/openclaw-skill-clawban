@@ -30,17 +30,27 @@ export type SessionEntry = {
   workStartedAt?: string;
   closedAt?: string;
   continueCount?: number;
-  pendingMutation?: {
-    kind: 'worker_result';
-    decision: 'completed' | 'blocked';
-    commentBody: string;
-    targetStage: 'stage:in-review' | 'stage:blocked';
-    links?: Array<{ title: string; url: string }>;
-    createdAt: string;
-    commentAppliedAt?: string;
-    stageAppliedAt?: string;
-    linksAppliedAt?: string;
-  };
+  pendingMutation?: (
+    | {
+        kind: 'worker_result';
+        decision: 'completed' | 'blocked';
+        commentBody: string;
+        targetStage: 'stage:in-review' | 'stage:blocked';
+        links?: Array<{ title: string; url: string }>;
+        createdAt: string;
+        commentAppliedAt?: string;
+        stageAppliedAt?: string;
+        linksAppliedAt?: string;
+      }
+    | {
+        kind: 'human_reopen';
+        fromStage: 'stage:blocked' | 'stage:in-review' | 'state:done';
+        toStage: import('../stage.js').StageKey;
+        triggerCommentId: string;
+        createdAt: string;
+        stageAppliedAt?: string;
+      }
+  );
 };
 
 export type SessionMap = {
