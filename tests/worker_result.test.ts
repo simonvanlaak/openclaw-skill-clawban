@@ -87,4 +87,20 @@ describe('worker_result schema', () => {
     expect(comment).toContain('Worker decision: completed\n\nSolution summary:');
     expect(comment.indexOf('Solution summary:')).toBeLessThan(comment.indexOf('Completed steps:'));
   });
+
+  it('places blocker resolve requests immediately after worker decision for blocked comments', () => {
+    const payload = JSON.stringify({
+      decision: 'blocked',
+      completed_steps: ['Investigated the failing integration and isolated the external dependency gap.'],
+      clarification_questions: [],
+      blocker_resolve_requests: ['Provide the missing API credential or confirm the intended fallback behavior.'],
+      evidence: [],
+    });
+    const parsed = validateWorkerResult(payload);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const comment = formatWorkerResultComment(parsed.value);
+    expect(comment).toContain('Worker decision: blocked\n\nBlocker resolve requests:');
+    expect(comment.indexOf('Blocker resolve requests:')).toBeLessThan(comment.indexOf('Completed steps:'));
+  });
 });

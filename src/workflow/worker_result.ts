@@ -218,6 +218,9 @@ export function formatWorkerResultComment(result: WorkerResult): string {
   if (result.decision === 'completed') {
     sections.push('', 'Solution summary:', result.solution_summary ?? '');
   }
+  if (result.decision === 'blocked') {
+    sections.push('', 'Blocker resolve requests:', numberedList(result.blocker_resolve_requests));
+  }
 
   sections.push('', 'Completed steps:', numberedList(result.completed_steps));
 
@@ -227,9 +230,6 @@ export function formatWorkerResultComment(result: WorkerResult): string {
 
   if (result.decision === 'completed') {
     sections.push('', 'Evidence:', numberedList(result.evidence));
-  }
-  if (result.decision === 'blocked') {
-    sections.push('', 'Blocker resolve requests:', numberedList(result.blocker_resolve_requests));
   }
   if (result.decision === 'uncertain') {
     sections.push('', 'Clarification questions:', numberedList(result.clarification_questions));
