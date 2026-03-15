@@ -489,9 +489,12 @@ export class PlaneAdapter implements Adapter {
     return next;
   }
 
-  private async getSnapshotIssuesForProject(projectId: string, opts?: { assigneeId?: string }): Promise<any[]> {
-    if (opts?.assigneeId) {
-      const issuesRaw = await this.listIssuesRaw(projectId, { assigneeId: opts.assigneeId });
+  private async getSnapshotIssuesForProject(projectId: string, opts?: { assigneeId?: string; stateId?: string }): Promise<any[]> {
+    if (opts?.assigneeId || opts?.stateId) {
+      const issuesRaw = await this.listIssuesRaw(projectId, {
+        assigneeId: opts?.assigneeId,
+        stateId: opts?.stateId,
+      });
       return normalizePlaneIssuesList(issuesRaw);
     }
 
@@ -1169,6 +1172,13 @@ export class PlaneAdapter implements Adapter {
     return match.id;
   }
 
+  private async findStateIdByName(projectId: string, expectedName: string): Promise<string | undefined> {
+    const states = await this.fetchStatesForProject(projectId);
+    const wanted = expectedName.trim().toLowerCase();
+    const match = states.find((state) => state.name.trim().toLowerCase() === wanted);
+    return match?.id;
+  }
+
   private async resolveCanonicalStageForIssueRaw(
     projectId: string,
     issueRaw: unknown,
@@ -1219,7 +1229,11 @@ export class PlaneAdapter implements Adapter {
     const merged: Array<{ id: string; updatedAt?: Date; assignees?: Array<{ id?: string; username?: string; name?: string } | string> }> = [];
 
     for (const projectId of this.projectIds) {
-      const issues = await this.getSnapshotIssuesForProject(projectId, { assigneeId: meId || undefined });
+      const stateId = await this.resolveStateIdForStage(projectId, stage).catch(() => undefined);
+      const issues = await this.getSnapshotIssuesForProject(projectId, {
+        assigneeId: meId || undefined,
+        stateId,
+      });
       const snap = await this.fetchSnapshotForProject(projectId, issues);
 
       let items = [...snap.values()].filter((i) => i.stage.key === stage);
@@ -1269,11 +1283,17 @@ export class PlaneAdapter implements Adapter {
     const merged: Array<{ id: string; updatedAt?: Date }> = [];
 
     for (const projectId of this.projectIds) {
-      const issues = normalizePlaneIssuesList(await this.listIssuesRaw(projectId, { assigneeId: meId || undefined }));
-      let items = issues.filter((issue) => {
-        const stateName = extractIssueStageName(issue);
-        return typeof stateName === 'string' && stateName.trim().toLowerCase() === 'done';
-      });
+      const doneStateId = await this.findStateIdByName(projectId, 'Done').catch(() => undefined);
+      const issues = normalizePlaneIssuesList(await this.listIssuesRaw(projectId, {
+        assigneeId: meId || undefined,
+        stateId: doneStateId,
+      }));
+      let items = doneStateId
+        ? issues
+        : issues.filter((issue) => {
+            const stateName = extractIssueStageName(issue);
+            return typeof stateName === 'string' && stateName.trim().toLowerCase() === 'done';
+          });
 
       if (meId) {
         const hasAnyAssigneeData = items.some((issue) => extractIssueAssigneeIds(issue).length > 0);
@@ -1297,8 +1317,9 @@ export class PlaneAdapter implements Adapter {
       .map((item) => item.id);
   }
 
-  private async listIssuesRaw(projectId: string, opts?: { assigneeId?: string }): Promise<any> {
+  private async listIssuesRaw(projectId: string, opts?: { assigneeId?: string; stateId?: string }): Promise<any> {
     const args = ['issues', 'list', '-p', projectId] as string[];
+    if (opts?.stateId) args.push('--state', opts.stateId);
     if (opts?.assigneeId) args.push('--assignee', opts.assigneeId);
     const out = await this.cli.run([...this.baseArgs, ...args, ...this.formatArgs]);
     return out.trim().length > 0 ? JSON.parse(out) : [];
@@ -1357,7 +1378,11 @@ export class PlaneAdapter implements Adapter {
     const merged: Array<{ id: string; title: string; priority: number }> = [];
 
     for (const projectId of this.projectIds) {
-      const issues = await this.getSnapshotIssuesForProject(projectId, { assigneeId: meId || undefined });
+      const backlogStateId = await this.resolveStateIdForStage(projectId, 'stage:todo').catch(() => undefined);
+      const issues = await this.getSnapshotIssuesForProject(projectId, {
+        assigneeId: meId || undefined,
+        stateId: backlogStateId,
+      });
 
       const snap = await this.fetchSnapshotForProject(projectId, issues);
       let backlog = [...snap.values()].filter((i) => i.stage.key === 'stage:todo');

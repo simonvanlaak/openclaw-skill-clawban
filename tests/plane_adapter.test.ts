@@ -127,6 +127,15 @@ describe('PlaneAdapter', () => {
       })
       // whoami sanity check projects list
       .mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+      // states lookup to resolve stage filter
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          results: [
+            { id: 'state-in-progress-1', name: 'In Progress' },
+            { id: 'state-blocked-1', name: 'Blocked' },
+          ],
+        }),
+      })
       // snapshot list (stale: still In Progress)
       .mockResolvedValueOnce({
         stdout: JSON.stringify([
@@ -141,15 +150,6 @@ describe('PlaneAdapter', () => {
       // live issue read (fresh: moved to Blocked, state exposed as UUID)
       .mockResolvedValueOnce({
         stdout: JSON.stringify({ id: 'i-stale', state: 'state-blocked-1' }),
-      })
-      // states lookup to map UUID -> canonical stage
-      .mockResolvedValueOnce({
-        stdout: JSON.stringify({
-          results: [
-            { id: 'state-in-progress-1', name: 'In Progress' },
-            { id: 'state-blocked-1', name: 'Blocked' },
-          ],
-        }),
       });
 
     const adapter = new PlaneAdapter({
@@ -165,6 +165,14 @@ describe('PlaneAdapter', () => {
 
     expect(ids).toEqual([]);
     const calls = (execa as any).mock.calls.map((c: any) => c[1]);
+    expect(calls.some((call: string[]) =>
+      call.includes('issues')
+      && call.includes('list')
+      && call.includes('--state')
+      && call.includes('state-in-progress-1')
+      && call.includes('--assignee')
+      && call.includes('me-1'),
+    )).toBe(true);
     expect(calls).toContainEqual(['-f', 'json', 'issues', 'get', '-p', projectId, 'i-stale']);
     expect(calls).toContainEqual(['-f', 'json', 'states', '-p', projectId]);
   });
@@ -368,6 +376,12 @@ describe('PlaneAdapter', () => {
       // whoami -> me + projects list
       .mockResolvedValueOnce({ stdout: JSON.stringify({ id: 'me1' }) })
       .mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+      // states
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify([
+          { id: 'todo-state', name: 'stage:todo' },
+        ]),
+      })
       // issues list
       .mockResolvedValueOnce({
         stdout: JSON.stringify([
@@ -409,6 +423,12 @@ describe('PlaneAdapter', () => {
       // whoami -> me + projects list
       .mockResolvedValueOnce({ stdout: JSON.stringify({ id: 'me1', email: 'jules@local' }) })
       .mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+      // states
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify([
+          { id: 'todo-state', name: 'stage:todo' },
+        ]),
+      })
       // issues list
       .mockResolvedValueOnce({
         stdout: JSON.stringify([

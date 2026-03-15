@@ -24,10 +24,22 @@ describe('PlaneAdapter (multi-project)', () => {
       // whoami -> me + projects list
       .mockResolvedValueOnce({ stdout: JSON.stringify({ id: 'me1' }) })
       .mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+      // project A states
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify([
+          { id: 'todo-a', name: 'stage:todo' },
+        ]),
+      })
       // project A issues list
       .mockResolvedValueOnce({
         stdout: JSON.stringify([
           { id: 'A1', name: 'A1', state: { name: 'stage:todo' }, updated_at: '2026-02-26T00:00:00Z' },
+        ]),
+      })
+      // project B states
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify([
+          { id: 'todo-b', name: 'stage:todo' },
         ]),
       })
       // project B issues list
@@ -53,7 +65,7 @@ describe('PlaneAdapter (multi-project)', () => {
     expect(execa).toHaveBeenNthCalledWith(
       3,
       'plane',
-      ['issues', 'list', '-p', 'projA', '--assignee', 'me1', '-f', 'json'],
+      ['-f', 'json', 'states', '-p', 'projA'],
       expect.objectContaining({
         stdout: 'pipe',
         stderr: 'pipe',
@@ -63,7 +75,27 @@ describe('PlaneAdapter (multi-project)', () => {
     expect(execa).toHaveBeenNthCalledWith(
       4,
       'plane',
-      ['issues', 'list', '-p', 'projB', '--assignee', 'me1', '-f', 'json'],
+      ['issues', 'list', '-p', 'projA', '--state', 'todo-a', '--assignee', 'me1', '-f', 'json'],
+      expect.objectContaining({
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }),
+    );
+
+    expect(execa).toHaveBeenNthCalledWith(
+      5,
+      'plane',
+      ['-f', 'json', 'states', '-p', 'projB'],
+      expect.objectContaining({
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }),
+    );
+
+    expect(execa).toHaveBeenNthCalledWith(
+      6,
+      'plane',
+      ['issues', 'list', '-p', 'projB', '--state', 'todo-b', '--assignee', 'me1', '-f', 'json'],
       expect.objectContaining({
         stdout: 'pipe',
         stderr: 'pipe',
@@ -79,10 +111,22 @@ describe('PlaneAdapter (multi-project)', () => {
       // whoami -> me + projects list
       .mockResolvedValueOnce({ stdout: JSON.stringify({ id: 'me1' }) })
       .mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+      // project A states
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify([
+          { id: 'blocked-a', name: 'Blocked' },
+        ]),
+      })
       // project A issues list (assignee-filtered)
       .mockResolvedValueOnce({
         stdout: JSON.stringify([
           { id: 'A1', name: 'A1', state: { name: 'Blocked' }, updated_at: '2026-02-26T00:00:00Z' },
+        ]),
+      })
+      // project B states
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify([
+          { id: 'blocked-b', name: 'Blocked' },
         ]),
       })
       // project B issues list (assignee-filtered)
@@ -108,7 +152,7 @@ describe('PlaneAdapter (multi-project)', () => {
     expect(execa).toHaveBeenNthCalledWith(
       3,
       'plane',
-      ['issues', 'list', '-p', 'projA', '--assignee', 'me1', '-f', 'json'],
+      ['-f', 'json', 'states', '-p', 'projA'],
       expect.objectContaining({
         stdout: 'pipe',
         stderr: 'pipe',
@@ -117,7 +161,25 @@ describe('PlaneAdapter (multi-project)', () => {
     expect(execa).toHaveBeenNthCalledWith(
       4,
       'plane',
-      ['issues', 'list', '-p', 'projB', '--assignee', 'me1', '-f', 'json'],
+      ['issues', 'list', '-p', 'projA', '--state', 'blocked-a', '--assignee', 'me1', '-f', 'json'],
+      expect.objectContaining({
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }),
+    );
+    expect(execa).toHaveBeenNthCalledWith(
+      5,
+      'plane',
+      ['-f', 'json', 'states', '-p', 'projB'],
+      expect.objectContaining({
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }),
+    );
+    expect(execa).toHaveBeenNthCalledWith(
+      6,
+      'plane',
+      ['issues', 'list', '-p', 'projB', '--state', 'blocked-b', '--assignee', 'me1', '-f', 'json'],
       expect.objectContaining({
         stdout: 'pipe',
         stderr: 'pipe',
