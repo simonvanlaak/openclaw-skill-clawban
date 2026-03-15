@@ -296,6 +296,87 @@ function extractIssueBody(raw: unknown): string | undefined {
   return undefined;
 }
 
+function extractIssueTitle(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const issue: any = raw;
+  const candidates = [issue.name, issue.title];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  return undefined;
+}
+
+function extractIssueUrl(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const issue: any = raw;
+  const value = issue.url;
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function extractIssueLabels(raw: unknown): string[] {
+  if (!raw || typeof raw !== 'object') return [];
+  const issue: any = raw;
+  const labels = Array.isArray(issue.labels) ? issue.labels : [];
+  return labels
+    .map((label: any) => {
+      if (typeof label === 'string') return label.trim();
+      if (label && typeof label === 'object' && typeof label.name === 'string') return label.name.trim();
+      return '';
+    })
+    .filter((label: string) => label.length > 0);
+}
+
+function extractIssueUpdatedAt(raw: unknown): Date | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const issue: any = raw;
+  const value = issue.updatedAt ?? issue.updated_at;
+  return typeof value === 'string' ? parsePlaneDate(value) : undefined;
+}
+
+function extractIssueAssignees(raw: unknown): Array<{ id?: string; username?: string; name?: string } | string> {
+  if (!raw || typeof raw !== 'object') return [];
+  const issue: any = raw;
+  const assignees = Array.isArray(issue.assignees) ? issue.assignees : [];
+  return assignees
+    .map((a: any) => {
+      if (typeof a === 'string') return a.trim();
+      if (a && typeof a === 'object') {
+        return {
+          id:
+            idFromUnknown(a.id) ??
+            idFromUnknown(a.user_id) ??
+            idFromUnknown(a.userId) ??
+            idFromUnknown(a.user),
+          name:
+            a.name ??
+            a.full_name ??
+            a.fullName ??
+            a.display_name ??
+            a.displayName ??
+            a.user?.name ??
+            a.user?.full_name ??
+            a.user?.fullName ??
+            a.user?.display_name ??
+            a.user?.displayName,
+          username:
+            a.username ??
+            a.email ??
+            a.display_name ??
+            a.displayName ??
+            a.user?.username ??
+            a.user?.email ??
+            a.user?.display_name ??
+            a.user?.displayName,
+        };
+      }
+      return undefined;
+    })
+    .filter((assignee: { id?: string; username?: string; name?: string } | string | undefined): assignee is { id?: string; username?: string; name?: string } | string => {
+      if (typeof assignee === 'string') return assignee.length > 0;
+      return Boolean(assignee && (assignee.id || assignee.username || assignee.name));
+    });
+}
+
 import { CliRunner } from './cli.js';
 
 type PlaneState = {
@@ -1043,11 +1124,17 @@ export class PlaneAdapter implements Adapter {
         idToDisplay.set(id, display);
       }
 
-      const snap = await this.fetchSnapshot();
-      const item = snap instanceof Map ? snap.get(ticketId) : (snap as Record<string, any>)[ticketId];
-      if (!item) return [];
+      const projectId = await this.resolveProjectIdForIssue(ticketId, 'getStakeholderMentions');
+      let raw: unknown;
+      try {
+        raw = await this.getIssueRaw(projectId, ticketId);
+      } catch {
+        const snap = await this.fetchSnapshot();
+        const item = snap instanceof Map ? snap.get(ticketId) : (snap as Record<string, any>)[ticketId];
+        raw = (item as any)?.raw ?? item;
+      }
+      if (!raw) return [];
 
-      const raw = (item as any).raw ?? item;
       const creatorId = extractIssueCreatorId(raw);
       const assigneeIds = extractIssueAssigneeIds(raw);
 
@@ -1429,30 +1516,45 @@ export class PlaneAdapter implements Adapter {
     assignees?: Array<{ id?: string; username?: string; name?: string } | string>;
     updatedAt?: Date;
   }> {
-    const snap = await this.fetchSnapshot();
-    const item = snap.get(id);
-    if (!item) throw new Error(`Plane work item not found: ${id}`);
-
-    // Determine project id reliably. Some Plane list surfaces omit `project_id`,
-    // so we prefer the adapter's project resolution cache/probing.
     const projectId = await this.resolveProjectIdForIssue(id, 'getWorkItem');
-    let body = extractIssueBody(item.raw);
+    let liveRaw: unknown;
+    try {
+      liveRaw = await this.getIssueRaw(projectId, id);
+    } catch {
+      liveRaw = undefined;
+    }
+
+    let snapshotItem: WorkItem | undefined;
+    if (!liveRaw || !extractIssueTitle(liveRaw)) {
+      const snap = await this.fetchSnapshot();
+      snapshotItem = snap.get(id);
+    }
+
+    const raw = liveRaw ?? snapshotItem?.raw;
+    if (!raw) throw new Error(`Plane work item not found: ${id}`);
+
+    const stage =
+      await this.resolveCanonicalStageForIssueRaw(projectId, raw)
+      ?? snapshotItem?.stage.key;
+    if (!stage) {
+      throw new Error(`Plane work item ${id} does not map to a canonical stage`);
+    }
+
+    const title = extractIssueTitle(raw) ?? snapshotItem?.title ?? '';
+    if (!title) throw new Error(`Plane work item ${id} is missing a title`);
+
+    let body = extractIssueBody(raw);
 
     let sequenceId: number | undefined;
 
-    // Fetch issue details for richer/full description where list payload is truncated.
-    try {
-      const details = await this.getIssueRaw(projectId, id);
-      body = extractIssueBody(details) ?? body;
-      const seq = (details as any)?.sequence_id ?? (details as any)?.sequenceId;
+    if (liveRaw) {
+      const seq = (liveRaw as any)?.sequence_id ?? (liveRaw as any)?.sequenceId;
       const n = Number(seq);
       if (Number.isFinite(n) && n > 0) sequenceId = Math.floor(n);
-    } catch {
-      // Best-effort, never fail read path because detail endpoint shape varies.
     }
 
     if (!sequenceId) {
-      const seq = (item.raw as any)?.sequence_id ?? (item.raw as any)?.sequenceId;
+      const seq = (snapshotItem?.raw as any)?.sequence_id ?? (snapshotItem?.raw as any)?.sequenceId;
       const n = Number(seq);
       if (Number.isFinite(n) && n > 0) sequenceId = Math.floor(n);
     }
@@ -1466,16 +1568,22 @@ export class PlaneAdapter implements Adapter {
     }
 
     return {
-      id: item.id,
+      id: String(id),
       projectId,
       identifier,
-      title: item.title,
-      url: item.url,
-      stage: item.stage.key,
+      title,
+      url: extractIssueUrl(raw) ?? snapshotItem?.url,
+      stage,
       body,
-      labels: [...item.labels],
-      assignees: item.assignees,
-      updatedAt: item.updatedAt,
+      labels: (() => {
+        const labels = extractIssueLabels(raw);
+        return labels.length > 0 ? labels : [...(snapshotItem?.labels ?? [])];
+      })(),
+      assignees: (() => {
+        const assignees = extractIssueAssignees(raw);
+        return assignees.length > 0 ? assignees : snapshotItem?.assignees;
+      })(),
+      updatedAt: extractIssueUpdatedAt(raw) ?? snapshotItem?.updatedAt,
     };
   }
 

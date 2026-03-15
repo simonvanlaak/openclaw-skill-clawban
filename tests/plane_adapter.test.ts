@@ -503,21 +503,11 @@ describe('PlaneAdapter', () => {
 
   it('getWorkItem hydrates body/description from issue details for show/autopilot output', async () => {
     (execa as any as ExecaMock)
-      // fetchSnapshot -> issues list
-      .mockResolvedValueOnce({
-        stdout: JSON.stringify([
-          {
-            id: 'i42',
-            name: 'Ticket with details body',
-            state: { name: 'Todo' },
-            description: 'Short list payload',
-          },
-        ]),
-      })
-      // getIssueRaw -> issues get
       .mockResolvedValueOnce({
         stdout: JSON.stringify({
           id: 'i42',
+          name: 'Ticket with details body',
+          state: { name: 'Todo' },
           description: 'Full Plane description from details endpoint',
         }),
       });
@@ -533,24 +523,17 @@ describe('PlaneAdapter', () => {
     const item = await adapter.getWorkItem('i42');
 
     expect(item.body).toBe('Full Plane description from details endpoint');
-    expect((execa as any).mock.calls[0]?.[1]).toEqual(['-f', 'json', 'issues', 'list', '-p', 'proj']);
-    expect((execa as any).mock.calls[1]?.[1]).toEqual(['-f', 'json', 'issues', 'get', '-p', 'proj', 'i42']);
+    expect((execa as any).mock.calls[0]?.[1]).toEqual(['-f', 'json', 'issues', 'get', '-p', 'proj', 'i42']);
+    expect((execa as any).mock.calls.length).toBe(1);
   });
 
   it('getWorkItem falls back to stripped HTML description when only HTML is available', async () => {
     (execa as any as ExecaMock)
       .mockResolvedValueOnce({
-        stdout: JSON.stringify([
-          {
-            id: 'i43',
-            name: 'Ticket html',
-            state: { name: 'Todo' },
-          },
-        ]),
-      })
-      .mockResolvedValueOnce({
         stdout: JSON.stringify({
           id: 'i43',
+          name: 'Ticket html',
+          state: { name: 'Todo' },
           description_html: '<p>Hello<br/>Plane</p>',
         }),
       });
@@ -565,6 +548,43 @@ describe('PlaneAdapter', () => {
 
     const item = await adapter.getWorkItem('i43');
     expect(item.body).toBe('Hello\nPlane');
+  });
+
+  it('getWorkItem falls back to snapshot when live issue details omit title/stage fields', async () => {
+    (execa as any as ExecaMock)
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          id: 'i44',
+          description: 'Only body from details endpoint',
+        }),
+      })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify([
+          {
+            id: 'i44',
+            name: 'Fallback snapshot title',
+            state: { name: 'Todo' },
+            updated_at: '2026-03-15T18:00:00Z',
+            labels: [{ name: 'bug' }],
+          },
+        ]),
+      });
+
+    const adapter = new PlaneAdapter({
+      workspaceSlug: 'ws',
+      projectId: 'proj',
+      stageMap: {
+        Todo: 'stage:todo',
+      },
+    });
+
+    const item = await adapter.getWorkItem('i44');
+    expect(item.title).toBe('Fallback snapshot title');
+    expect(item.stage).toBe('stage:todo');
+    expect(item.body).toBe('Only body from details endpoint');
+    expect(item.labels).toEqual(['bug']);
+    expect((execa as any).mock.calls[0]?.[1]).toEqual(['-f', 'json', 'issues', 'get', '-p', 'proj', 'i44']);
+    expect((execa as any).mock.calls[1]?.[1]).toEqual(['-f', 'json', 'issues', 'list', '-p', 'proj']);
   });
 
   it('implements addComment via Plane comment API', async () => {
