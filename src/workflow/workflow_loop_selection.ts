@@ -7,7 +7,7 @@ import {
 import type { StageKey } from '../stage.js';
 import { currentActiveSession } from './workflow_state.js';
 import {
-  loadWorkerDelegationState,
+  loadTrackedWorkerRunState,
   type WorkerRuntimeOptions,
 } from './worker_runtime.js';
 import type {
@@ -141,9 +141,9 @@ export async function runWorkflowLoopSelection(params: {
     }
     const active = currentActiveSession(params.map);
     if (!params.dryRun && active && active.ticketId === keep.id && params.workerRuntimeOptions) {
-      const delegationState = await loadWorkerDelegationState(
-        active.sessionId,
+      const delegationState = await loadTrackedWorkerRunState(
         keep.id,
+        params.map.sessionsByTicket[keep.id],
         params.workerRuntimeOptions,
       );
       if (delegationState.kind === 'running' || delegationState.kind === 'completed') {

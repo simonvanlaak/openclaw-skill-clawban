@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import { execa } from 'execa';
+import type { SessionEntry } from '../automation/session_dispatcher.js';
 
 type WorkerRouting = { sessionKey?: string; sessionId?: string; agentSessionId?: string };
 
@@ -55,6 +55,13 @@ export type WorkerRuntimeOptions = {
   defaultBackgroundTimeoutMs: number;
   isBackgroundDelegationAllowed(agentId: string): boolean;
   shouldStartInBackground?(agentId: string): boolean;
+  requesterSessionKey?: string;
+};
+
+type GatewayHttpConfig = {
+  baseUrl: string;
+  token?: string;
+  password?: string;
 };
 
 type AgentWaitSnapshot = {
@@ -137,6 +144,14 @@ async function fileExists(filePath: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function readJsonFile<T>(filePath: string): Promise<T | null> {
+  try {
+    return JSON.parse(await fs.readFile(filePath, 'utf8')) as T;
+  } catch {
+    return null;
   }
 }
 
@@ -302,20 +317,52 @@ export function extractCompletedAssistantReplySince(history: unknown, sinceTimes
 }
 
 async function gatewayCall(method: string, params: Record<string, unknown>, timeoutMs = 15_000): Promise<unknown> {
-  const args = [
-    'gateway',
-    'call',
-    method,
-    '--params',
-    JSON.stringify(params),
-    '--timeout',
-    String(timeoutMs),
-    '--json',
-  ];
-  const run = await execa('openclaw', args);
-  const raw = String(run.stdout ?? '').trim();
-  if (!raw) return null;
-  return JSON.parse(raw);
+  const config = await loadGatewayHttpConfig();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (config.token) {
+      headers.Authorization = `Bearer ${config.token}`;
+    }
+
+    const response = await fetch(`${config.baseUrl}/tools/invoke`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        tool: method,
+        args: params,
+        sessionKey: method === 'sessions_spawn' ? params.sessionKey : undefined,
+      }),
+      signal: controller.signal,
+    });
+
+    const raw = await response.text();
+    let payload: Record<string, unknown> | null = null;
+    try {
+      payload = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+    } catch {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const message =
+        typeof payload?.error === 'object' && payload.error && typeof (payload.error as Record<string, unknown>).message === 'string'
+          ? String((payload.error as Record<string, unknown>).message)
+          : raw.trim() || `Gateway HTTP ${response.status}`;
+      throw new Error(message);
+    }
+
+    const result = payload?.result && typeof payload.result === 'object'
+      ? (payload.result as Record<string, unknown>)
+      : null;
+    return result?.details ?? result ?? null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function gatewayCallWithRetry(params: {
@@ -361,29 +408,32 @@ function buildDelegationNotice(params: {
   sessionId: string;
   runId: string;
   runTimeoutSeconds: number;
+  sessionKey?: string;
 }): string {
   return [
     `Worker started for ticket ${params.ticketId}. Awaiting asynchronous completion.`,
     `sessionId: ${params.sessionId}`,
     `runId: ${params.runId}`,
     `runTimeoutSeconds: ${params.runTimeoutSeconds}`,
+    ...(params.sessionKey ? [`childSessionKey: ${params.sessionKey}`] : []),
   ].join('\n');
 }
 
-function parseChatSendStart(payload: unknown): { runId: string } {
+function parseSessionsSpawnStart(payload: unknown): { runId: string; childSessionKey: string } {
   if (!payload || typeof payload !== 'object') {
-    throw new Error('chat.send did not return a JSON object');
+    throw new Error('sessions_spawn did not return a JSON object');
   }
   const row = payload as Record<string, unknown>;
   const runId = String(row.runId ?? '').trim();
+  const childSessionKey = String(row.childSessionKey ?? '').trim();
   const status = String(row.status ?? '').trim().toLowerCase();
-  if (!runId) {
-    throw new Error('chat.send response did not include runId');
+  if (!runId || !childSessionKey) {
+    throw new Error('sessions_spawn response did not include runId and childSessionKey');
   }
-  if (status && status !== 'started') {
-    throw new Error(`chat.send returned unexpected status=${status}`);
+  if (status && status !== 'accepted') {
+    throw new Error(`sessions_spawn returned unexpected status=${status}`);
   }
-  return { runId };
+  return { runId, childSessionKey };
 }
 
 function parseAgentWaitSnapshot(payload: unknown): AgentWaitSnapshot {
@@ -405,62 +455,86 @@ function parseAgentWaitSnapshot(payload: unknown): AgentWaitSnapshot {
   };
 }
 
-async function startWorkerDelegation(
-  params: {
-    ticketId: string;
-    dispatchRunId: string;
-    agentId: string;
-    sessionId: string;
-    thinking: string;
-    runId: string;
-    sessionKey: string;
-    runTimeoutSeconds: number;
-  },
-  opts: WorkerRuntimeOptions,
-): Promise<void> {
-  const paths = workerDelegationPaths(opts.delegationDir, params.sessionId);
-  const meta: WorkerDelegationMeta = {
-    ticketId: params.ticketId,
-    dispatchRunId: params.dispatchRunId,
-    sessionId: params.sessionId,
-    agentId: params.agentId,
-    thinking: params.thinking,
-    startedAt: new Date().toISOString(),
-    runId: params.runId,
-    sessionKey: params.sessionKey,
-    runTimeoutSeconds: params.runTimeoutSeconds,
-  };
-
-  await fs.mkdir(paths.dir, { recursive: true });
-  await fs.writeFile(paths.metaPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
-
-  const waitTimeoutMs = params.runTimeoutSeconds * 1000;
-  const gatewayTimeoutMs = waitTimeoutMs + 30_000;
-  const script = [
-    'set +e',
-    `run_id=${shellQuote(params.runId)}`,
-    `wait_timeout_ms=${waitTimeoutMs}`,
-    `wait_result_path=${shellQuote(paths.waitResultPath)}`,
-    `stderr_path=${shellQuote(paths.stderrPath)}`,
-    `done_path=${shellQuote(paths.donePath)}`,
-    `wait_params=$(jq -cn --arg runId "$run_id" --argjson timeoutMs "$wait_timeout_ms" '{runId:$runId,timeoutMs:$timeoutMs}')`,
-    `openclaw gateway call agent.wait --timeout ${gatewayTimeoutMs} --json --params "$wait_params" > "$wait_result_path" 2>> "$stderr_path"`,
-    'wait_rc=$?',
-    'if [ "$wait_rc" -ne 0 ]; then',
-    '  printf "{\\"runId\\":%s,\\"status\\":\\"error\\",\\"error\\":\\"agent.wait failed\\"}\\n" "$(printf \'%s\' "$run_id" | jq -Rsa .)" > "$wait_result_path"',
-    'fi',
-    'touch "$done_path"',
-    buildDelegationCompletionHook({ ticketId: params.ticketId, sessionId: params.sessionId, stderrPath: paths.stderrPath }),
-  ].join('\n');
-
-  const detached: any = execa('bash', ['-lc', script], { detached: true, stdio: 'ignore' } as any);
-  if (typeof detached?.unref === 'function') detached.unref();
-  if (typeof detached?.catch === 'function') detached.catch(() => undefined);
-}
-
 async function clearWorkerDelegation(delegationDir: string, sessionId: string): Promise<void> {
   const paths = workerDelegationPaths(delegationDir, sessionId);
   await fs.rm(paths.dir, { recursive: true, force: true });
+}
+
+function entryToDelegationMeta(ticketId: string, entry: SessionEntry): WorkerDelegationMeta | null {
+  if (!entry.activeRun?.sessionKey) return null;
+  return {
+    ticketId,
+    dispatchRunId: 'spawn',
+    sessionId: entry.sessionId,
+    agentId: parseAgentIdFromSessionKey(entry.activeRun.sessionKey) ?? 'kanban-workflow-worker',
+    thinking: 'high',
+    startedAt: entry.activeRun.sentAt,
+    runId: entry.activeRun.runId,
+    sessionKey: entry.activeRun.sessionKey,
+    runTimeoutSeconds: entry.activeRun.waitTimeoutSeconds,
+  };
+}
+
+export async function loadTrackedWorkerRunState(
+  ticketId: string,
+  entry: SessionEntry | undefined,
+  opts: WorkerRuntimeOptions,
+): Promise<WorkerDelegationState> {
+  if (entry?.activeRun?.status === 'started' && entry.activeRun.sessionKey) {
+    const meta = entryToDelegationMeta(ticketId, entry);
+    if (!meta) return { kind: 'none' };
+    const startedAtMs = Date.parse(entry.activeRun.sentAt);
+    const reply = await extractCompletedAssistantReplyFromLocalSessionSince(
+      entry.activeRun.sessionKey,
+      Number.isFinite(startedAtMs) ? startedAtMs - 1 : 0,
+    );
+    if (!reply?.text?.trim()) {
+      return { kind: 'running', meta };
+    }
+    return {
+      kind: 'completed',
+      meta,
+      workerOutput: reply.text,
+      raw: reply.text,
+      routing: {
+        sessionKey: entry.activeRun.sessionKey,
+        sessionId: reply.sessionId ?? entry.sessionId,
+      },
+    };
+  }
+
+  return loadWorkerDelegationState(entry?.sessionId ?? '', ticketId, opts);
+}
+
+async function loadGatewayHttpConfig(): Promise<GatewayHttpConfig> {
+  const port = String(process.env.OPENCLAW_GATEWAY_PORT ?? '').trim();
+  const token = String(process.env.OPENCLAW_GATEWAY_TOKEN ?? '').trim();
+  const password = String(process.env.OPENCLAW_GATEWAY_PASSWORD ?? '').trim();
+  const baseUrlFromEnv = String(process.env.OPENCLAW_GATEWAY_BASE_URL ?? '').trim();
+  if (baseUrlFromEnv || token || password || port) {
+    const normalizedPort = port || '18789';
+    return {
+      baseUrl: baseUrlFromEnv || `http://127.0.0.1:${normalizedPort}`,
+      token: token || undefined,
+      password: password || undefined,
+    };
+  }
+
+  const configPath = String(process.env.OPENCLAW_CONFIG_PATH ?? '').trim()
+    || path.join(resolveOpenClawRoot(), 'openclaw.json');
+  const config = await readJsonFile<Record<string, unknown>>(configPath);
+  const gateway = config?.gateway && typeof config.gateway === 'object'
+    ? (config.gateway as Record<string, unknown>)
+    : {};
+  const auth = gateway.auth && typeof gateway.auth === 'object'
+    ? (gateway.auth as Record<string, unknown>)
+    : {};
+  const gatewayPort = String(gateway.port ?? '18789').trim() || '18789';
+  return {
+    baseUrl: `http://127.0.0.1:${gatewayPort}`,
+    token: typeof auth.token === 'string' && auth.token.trim() ? auth.token.trim() : undefined,
+    password: typeof auth.password === 'string' && auth.password.trim() ? auth.password.trim() : undefined,
+  };
 }
 
 export async function loadWorkerDelegationState(
@@ -560,14 +634,19 @@ export async function dispatchWorkerTurn(
   });
 
   const runTimeoutSeconds = timeoutMsToSeconds(
-    resolvePositiveInt(process.env.KWF_WORKER_RUN_TIMEOUT_MS, opts.defaultBackgroundTimeoutMs),
+    resolvePositiveInt(process.env.KWF_WORKER_RUN_TIMEOUT_MS, 60 * 60 * 1000),
   );
-  const sessionKey = workerSessionKey(params.agentId, params.sessionId);
+  const requesterSessionKey = opts.requesterSessionKey ?? 'agent:kanban-workflow-workflow-loop:main';
   const sendResponse = await gatewayCallWithRetry({
-    method: 'chat.send',
+    method: 'sessions_spawn',
     rpcParams: {
-      sessionKey,
-      message,
+      sessionKey: requesterSessionKey,
+      task: message,
+      label: params.sessionId,
+      agentId: params.agentId,
+      runTimeoutSeconds,
+      cleanup: 'keep',
+      thinking: params.thinking,
       idempotencyKey: randomUUID(),
     },
     timeoutMs: Math.max(opts.defaultSyncTimeoutMs, 15_000),
@@ -575,21 +654,7 @@ export async function dispatchWorkerTurn(
     retryDelayMs: resolveWorkerSendRetryDelayMs(),
     shouldRetry: isTransientGatewayDispatchErr,
   });
-  const started = parseChatSendStart(sendResponse);
-
-  await startWorkerDelegation(
-    {
-      ticketId: params.ticketId,
-      dispatchRunId: params.dispatchRunId,
-      agentId: params.agentId,
-      sessionId: params.sessionId,
-      thinking: params.thinking,
-      runId: started.runId,
-      sessionKey,
-      runTimeoutSeconds,
-    },
-    opts,
-  );
+  const started = parseSessionsSpawnStart(sendResponse);
 
   return {
     kind: 'delegated',
@@ -598,10 +663,11 @@ export async function dispatchWorkerTurn(
       sessionId: params.sessionId,
       runId: started.runId,
       runTimeoutSeconds,
+      sessionKey: started.childSessionKey,
     }),
     runId: started.runId,
     startedAt: new Date().toISOString(),
     waitTimeoutSeconds: runTimeoutSeconds,
-    sessionKey,
+    sessionKey: started.childSessionKey,
   };
 }

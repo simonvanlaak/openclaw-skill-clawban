@@ -114,6 +114,7 @@ const WORKER_RUNTIME_OPTIONS: WorkerRuntimeOptions = {
   delegationDir: WORKER_DELEGATION_DIR,
   defaultSyncTimeoutMs: DEFAULT_WORKER_SYNC_TIMEOUT_MS,
   defaultBackgroundTimeoutMs: DEFAULT_WORKER_BACKGROUND_TIMEOUT_MS,
+  requesterSessionKey: `agent:${WORKFLOW_LOOP_AGENT_ID}:main`,
   isBackgroundDelegationAllowed: isBackgroundWorkerDelegationAllowed,
   shouldStartInBackground: (agentId: string) => {
     if (agentId !== WORKER_AGENT_ID) return false;

@@ -13,7 +13,7 @@ import {
 import { runWorkflowLoopSelection } from './workflow_loop_selection.js';
 import {
   dispatchWorkerTurn,
-  loadWorkerDelegationState,
+  loadTrackedWorkerRunState,
   type WorkerRuntimeOptions,
 } from './worker_runtime.js';
 import { recoverWorkerDecisionFromComments } from './worker_decision_recovery.js';
@@ -131,7 +131,11 @@ export async function runWorkflowLoopController(params: {
           continue;
         }
 
-        const delegationState = await loadWorkerDelegationState(action.sessionId, action.ticketId, workerRuntimeOptions);
+        const delegationState = await loadTrackedWorkerRunState(
+          action.ticketId,
+          plan.map.sessionsByTicket[action.ticketId],
+          workerRuntimeOptions,
+        );
         if (delegationState.kind === 'running') {
           markSessionInProgress(plan.map, action.ticketId, new Date());
           execution.push({

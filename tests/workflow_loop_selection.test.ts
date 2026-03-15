@@ -8,15 +8,15 @@ vi.mock('../src/automation/auto_reopen.js', () => ({
   runAutoReopenOnHumanComment,
 }));
 
-const { loadWorkerDelegationState } = vi.hoisted(() => ({
-  loadWorkerDelegationState: vi.fn(async () => ({ kind: 'none' })),
+const { loadTrackedWorkerRunState } = vi.hoisted(() => ({
+  loadTrackedWorkerRunState: vi.fn(async () => ({ kind: 'none' })),
 }));
 
 vi.mock('../src/workflow/worker_runtime.js', async () => {
   const actual = await vi.importActual<typeof import('../src/workflow/worker_runtime.js')>('../src/workflow/worker_runtime.js');
   return {
     ...actual,
-    loadWorkerDelegationState,
+    loadTrackedWorkerRunState,
   };
 });
 
@@ -318,7 +318,7 @@ describe('workflow_loop_selection', () => {
   });
 
   it('fast-paths active tickets with completed/running delegation and skips heavy context reload', async () => {
-    loadWorkerDelegationState.mockResolvedValueOnce({ kind: 'completed', workerOutput: '{}', raw: '{}', meta: {} } as any);
+    loadTrackedWorkerRunState.mockResolvedValueOnce({ kind: 'completed', workerOutput: '{}', raw: '{}', meta: {} } as any);
 
     const adapter = {
       whoami: vi.fn(async () => ({ id: 'me-1', username: 'kwf-bot' })),
@@ -365,7 +365,11 @@ describe('workflow_loop_selection', () => {
     });
 
     expect(output.tick).toEqual({ kind: 'in_progress', id: 'A2', inProgressIds: ['A2'] });
-    expect(loadWorkerDelegationState).toHaveBeenCalledWith('jules-281', 'A2', expect.any(Object));
+    expect(loadTrackedWorkerRunState).toHaveBeenCalledWith(
+      'A2',
+      expect.objectContaining({ sessionId: 'jules-281' }),
+      expect.any(Object),
+    );
     expect(adapter.listComments).not.toHaveBeenCalled();
     expect(adapter.listAttachments).not.toHaveBeenCalled();
     expect(adapter.listLinkedWorkItems).not.toHaveBeenCalled();

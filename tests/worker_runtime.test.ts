@@ -9,6 +9,7 @@ import {
   extractCompletedAssistantReplyFromLocalSessionSince,
   extractCompletedAssistantReplySince,
   extractCompletedAssistantReplyWithLocalFallback,
+  loadTrackedWorkerRunState,
   loadWorkerDelegationState,
 } from '../src/workflow/worker_runtime.js';
 
@@ -288,5 +289,139 @@ describe('worker runtime terminal assistant reply detection', () => {
     ).resolves.toEqual({ kind: 'none' });
 
     await expect(fs.access(workDir)).rejects.toThrow();
+  });
+
+  it('reports a spawned worker run as running until the child session has a terminal assistant reply', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kwf-worker-runtime-'));
+    tempDirs.push(root);
+    process.env.OPENCLAW_HOME = root;
+
+    const sessionsDir = path.join(root, 'agents', 'kanban-workflow-worker', 'sessions');
+    await fs.mkdir(sessionsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sessionsDir, 'sessions.json'),
+      JSON.stringify(
+        {
+          'agent:kanban-workflow-worker:subagent:child-1': {
+            sessionId: 'child-1',
+            sessionFile: path.join(sessionsDir, 'child-1.jsonl'),
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(sessionsDir, 'child-1.jsonl'),
+      JSON.stringify({
+        type: 'message',
+        timestamp: '2026-03-15T12:00:01.000Z',
+        message: {
+          role: 'assistant',
+          stopReason: 'toolUse',
+          content: [{ type: 'toolCall', name: 'exec' }],
+        },
+      }) + '\n',
+      'utf8',
+    );
+
+    await expect(
+      loadTrackedWorkerRunState(
+        'ticket-1',
+        {
+          sessionId: 'jules-296',
+          lastState: 'in_progress',
+          lastSeenAt: '2026-03-15T12:00:00.000Z',
+          activeRun: {
+            runId: 'run-1',
+            status: 'started',
+            sentAt: '2026-03-15T12:00:00.000Z',
+            waitTimeoutSeconds: 3600,
+            sessionKey: 'agent:kanban-workflow-worker:subagent:child-1',
+          },
+        },
+        workerRuntimeOpts(path.join(root, 'delegations')),
+      ),
+    ).resolves.toMatchObject({
+      kind: 'running',
+      meta: {
+        ticketId: 'ticket-1',
+        runId: 'run-1',
+        sessionKey: 'agent:kanban-workflow-worker:subagent:child-1',
+      },
+    });
+  });
+
+  it('reports a spawned worker run as completed once the child session has a terminal assistant reply', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kwf-worker-runtime-'));
+    tempDirs.push(root);
+    process.env.OPENCLAW_HOME = root;
+
+    const sessionsDir = path.join(root, 'agents', 'kanban-workflow-worker', 'sessions');
+    await fs.mkdir(sessionsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sessionsDir, 'sessions.json'),
+      JSON.stringify(
+        {
+          'agent:kanban-workflow-worker:subagent:child-2': {
+            sessionId: 'child-2',
+            sessionFile: path.join(sessionsDir, 'child-2.jsonl'),
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(sessionsDir, 'child-2.jsonl'),
+      [
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-03-15T12:10:00.000Z',
+          message: {
+            role: 'assistant',
+            stopReason: 'toolUse',
+            content: [{ type: 'toolCall', name: 'exec' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-03-15T12:10:05.000Z',
+          message: {
+            role: 'assistant',
+            stopReason: 'stop',
+            content: [{ type: 'text', text: '{"decision":"completed"}' }],
+          },
+        }),
+      ].join('\n') + '\n',
+      'utf8',
+    );
+
+    await expect(
+      loadTrackedWorkerRunState(
+        'ticket-2',
+        {
+          sessionId: 'jules-297',
+          lastState: 'in_progress',
+          lastSeenAt: '2026-03-15T12:10:00.000Z',
+          activeRun: {
+            runId: 'run-2',
+            status: 'started',
+            sentAt: '2026-03-15T12:10:00.000Z',
+            waitTimeoutSeconds: 3600,
+            sessionKey: 'agent:kanban-workflow-worker:subagent:child-2',
+          },
+        },
+        workerRuntimeOpts(path.join(root, 'delegations')),
+      ),
+    ).resolves.toMatchObject({
+      kind: 'completed',
+      workerOutput: '{"decision":"completed"}',
+      routing: {
+        sessionKey: 'agent:kanban-workflow-worker:subagent:child-2',
+      },
+    });
   });
 });

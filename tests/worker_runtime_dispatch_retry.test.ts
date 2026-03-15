@@ -5,6 +5,7 @@ const workerRuntimeOpts = (delegationDir: string) => ({
   defaultSyncTimeoutMs: 30_000,
   defaultBackgroundTimeoutMs: 15 * 60_000,
   isBackgroundDelegationAllowed: () => false,
+  requesterSessionKey: 'agent:kanban-workflow-workflow-loop:main',
 });
 
 afterEach(() => {
@@ -12,20 +13,36 @@ afterEach(() => {
   vi.resetModules();
   delete process.env.KWF_WORKER_SEND_MAX_ATTEMPTS;
   delete process.env.KWF_WORKER_SEND_RETRY_DELAY_MS;
+  delete process.env.OPENCLAW_GATEWAY_TOKEN;
+  delete process.env.OPENCLAW_GATEWAY_PORT;
 });
 
 describe('worker runtime dispatch retries', () => {
   it('retries transient gateway close errors before starting an asynchronous worker run', async () => {
     process.env.KWF_WORKER_SEND_MAX_ATTEMPTS = '2';
     process.env.KWF_WORKER_SEND_RETRY_DELAY_MS = '1';
+    process.env.OPENCLAW_GATEWAY_TOKEN = 'test-token';
+    process.env.OPENCLAW_GATEWAY_PORT = '18789';
 
-    const execaMock = vi
+    const fetchMock = vi
       .fn()
       .mockRejectedValueOnce(new Error('Gateway call failed: Error: gateway closed (1000 normal closure): no close reason'))
-      .mockResolvedValueOnce({ stdout: '{"runId":"retry-send","status":"started"}' })
-      .mockResolvedValueOnce({ stdout: '' });
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            ok: true,
+            result: {
+              details: {
+                runId: 'retry-send',
+                childSessionKey: 'agent:kanban-workflow-worker:subagent:retry-send',
+                status: 'accepted',
+              },
+            },
+          }),
+      });
 
-    vi.doMock('execa', () => ({ execa: execaMock }));
+    vi.stubGlobal('fetch', fetchMock as any);
     const { dispatchWorkerTurn } = await import('../src/workflow/worker_runtime.js');
 
     await expect(
@@ -43,19 +60,30 @@ describe('worker runtime dispatch retries', () => {
     ).resolves.toMatchObject({
       kind: 'delegated',
       runId: 'retry-send',
-      sessionKey: 'agent:kanban-workflow-worker:jules-267',
+      sessionKey: 'agent:kanban-workflow-worker:subagent:retry-send',
     });
 
-    expect(execaMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('does not retry non-transient worker dispatch failures', async () => {
     process.env.KWF_WORKER_SEND_MAX_ATTEMPTS = '4';
     process.env.KWF_WORKER_SEND_RETRY_DELAY_MS = '1';
+    process.env.OPENCLAW_GATEWAY_TOKEN = 'test-token';
+    process.env.OPENCLAW_GATEWAY_PORT = '18789';
 
-    const execaMock = vi.fn().mockRejectedValueOnce(new Error('missing scope: chat.write'));
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      text: async () =>
+        JSON.stringify({
+          ok: false,
+          error: {
+            message: 'missing scope: sessions_spawn',
+          },
+        }),
+    });
 
-    vi.doMock('execa', () => ({ execa: execaMock }));
+    vi.stubGlobal('fetch', fetchMock as any);
     const { dispatchWorkerTurn } = await import('../src/workflow/worker_runtime.js');
 
     await expect(
@@ -70,8 +98,8 @@ describe('worker runtime dispatch retries', () => {
         },
         workerRuntimeOpts('/tmp/kwf-test-delegation'),
       ),
-    ).rejects.toThrow('missing scope: chat.write');
+    ).rejects.toThrow('missing scope: sessions_spawn');
 
-    expect(execaMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
