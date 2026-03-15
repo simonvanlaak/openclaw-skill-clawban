@@ -1,4 +1,5 @@
 import type { DispatchAction, SessionMap } from '../automation/session_dispatcher.js';
+import type { StageKey } from '../stage.js';
 import type { ExternalLinkInput, WorkItemDetails, WorkItemComment } from '../verbs/types.js';
 
 export type WorkflowLoopTick =
@@ -49,7 +50,30 @@ export type WorkflowHousekeepingAdapter = {
   deleteComment(id: string, commentId: string): Promise<void>;
 };
 
+export type WorkflowLoopSelectionAdapter = {
+  name(): string;
+  whoami(): Promise<{ id?: string; username?: string; name?: string }>;
+  listIdsByStage(stage: StageKey): Promise<string[]>;
+  listBacklogIdsInOrder(): Promise<string[]>;
+  listStageItems?(stage: StageKey): Promise<WorkItemDetails[]>;
+  listBacklogItemsInOrder?(): Promise<WorkItemDetails[]>;
+  getWorkItem(id: string): Promise<WorkItemDetails>;
+  listComments(
+    id: string,
+    opts: { limit?: number; newestFirst: boolean; includeInternal: boolean },
+  ): Promise<Array<{
+    id: string;
+    body: string;
+    createdAt?: Date;
+    author?: { id?: string; username?: string; name?: string };
+  }>>;
+  listAttachments(id: string): Promise<Array<unknown>>;
+  listLinkedWorkItems(id: string): Promise<Array<unknown>>;
+  setStage(id: string, stage: StageKey): Promise<void>;
+};
+
 export type WorkflowLoopControllerAdapter = WorkflowLifecycleAdapter & WorkflowHousekeepingAdapter;
+export type WorkflowLoopAdapter = WorkflowLoopControllerAdapter & WorkflowLoopSelectionAdapter;
 
 export type WorkflowLoopPlanView = {
   map: SessionMap;

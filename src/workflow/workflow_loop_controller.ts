@@ -10,6 +10,7 @@ import { shouldQuietPollAfterCarryForward } from './decision_policy.js';
 import {
   runWorkflowLoopHousekeeping,
 } from './workflow_loop_housekeeping.js';
+import { runWorkflowLoopSelection } from './workflow_loop_selection.js';
 import {
   dispatchWorkerTurn,
   loadWorkerDelegationState,
@@ -18,7 +19,7 @@ import {
 import { recoverWorkerDecisionFromComments } from './worker_decision_recovery.js';
 import { applyWorkerOutputToTicket, type WorkerExecutionOutcome } from './worker_output_applier.js';
 import type {
-  WorkflowLoopControllerAdapter,
+  WorkflowLoopAdapter,
   WorkflowLoopSelectionOutput,
 } from './workflow_loop_ports.js';
 
@@ -53,7 +54,7 @@ export type WorkflowLoopControllerResult =
     };
 
 export async function runWorkflowLoopController(params: {
-  adapter: WorkflowLoopControllerAdapter;
+  adapter: WorkflowLoopAdapter;
   output: WorkflowLoopSelectionOutput;
   previousMap: SessionMap;
   dryRun: boolean;
@@ -61,9 +62,12 @@ export async function runWorkflowLoopController(params: {
   workerAgentId: string;
   workerRuntimeOptions: WorkerRuntimeOptions;
   mapPath?: string;
+  requeueTargetStage?: import('../stage.js').StageKey;
+  allowImmediateHandoff?: boolean;
 }): Promise<WorkflowLoopControllerResult> {
   const { adapter, output, previousMap, dryRun, dispatchRunId, workerAgentId, workerRuntimeOptions } = params;
   const plan = buildWorkflowLoopPlan({ autopilotOutput: output, previousMap, now: new Date() });
+  const allowImmediateHandoff = params.allowImmediateHandoff ?? true;
 
   const activeCarryForward = Boolean(
     !dryRun &&
@@ -205,6 +209,58 @@ export async function runWorkflowLoopController(params: {
         persistMap: async (nextMap) => saveSessionMap(nextMap, params.mapPath),
       }));
     }
+  }
+
+  const shouldAttemptImmediateHandoff =
+    !dryRun &&
+    allowImmediateHandoff &&
+    !plan.map.active &&
+    execution.some((item) => {
+      if (item.outcome !== 'applied' || !item.parsed) return false;
+      return item.parsed.kind === 'completed' || item.parsed.kind === 'blocked' || item.parsed.kind === 'uncertain';
+    });
+
+  if (shouldAttemptImmediateHandoff) {
+    const handoffPreviousMap = JSON.parse(JSON.stringify(plan.map)) as SessionMap;
+    const handoffOutput = await runWorkflowLoopSelection({
+      adapter,
+      map: plan.map,
+      dryRun: false,
+      requeueTargetStage: params.requeueTargetStage,
+      workerRuntimeOptions,
+      persistMap: async (nextMap) => saveSessionMap(nextMap, params.mapPath),
+    });
+    const handoffResult = await runWorkflowLoopController({
+      adapter,
+      output: handoffOutput,
+      previousMap: handoffPreviousMap,
+      dryRun: false,
+      dispatchRunId: `${dispatchRunId}:handoff`,
+      workerAgentId,
+      workerRuntimeOptions,
+      mapPath: params.mapPath,
+      requeueTargetStage: params.requeueTargetStage,
+      allowImmediateHandoff: false,
+    });
+
+    if (handoffResult.quiet) {
+      return handoffResult;
+    }
+
+    return {
+      quiet: false,
+      exitCode: handoffResult.exitCode,
+      payload: {
+        workflowLoop: {
+          ...handoffResult.payload.workflowLoop,
+          dispatchRunId,
+          actions: [...plan.actions, ...handoffResult.payload.workflowLoop.actions],
+          execution: [...execution, ...handoffResult.payload.workflowLoop.execution],
+          activeTicketId: handoffResult.payload.workflowLoop.activeTicketId,
+        },
+        autopilot: handoffResult.payload.autopilot,
+      },
+    };
   }
 
   const housekeeping = await runWorkflowLoopHousekeeping({

@@ -10,25 +10,11 @@ import {
   loadWorkerDelegationState,
   type WorkerRuntimeOptions,
 } from './worker_runtime.js';
-import type { WorkflowLoopSelectionOutput } from './workflow_loop_ports.js';
+import type {
+  WorkflowLoopSelectionAdapter,
+  WorkflowLoopSelectionOutput,
+} from './workflow_loop_ports.js';
 import type { ShowPayload, WorkItemAttachment, WorkItemDetails, WorkItemLink } from '../verbs/types.js';
-
-type WorkflowLoopSelectionAdapter = {
-  name(): string;
-  whoami(): Promise<{ id?: string; username?: string; name?: string }>;
-  listIdsByStage(stage: StageKey): Promise<string[]>;
-  listBacklogIdsInOrder(): Promise<string[]>;
-  listStageItems?(stage: StageKey): Promise<WorkItemDetails[]>;
-  listBacklogItemsInOrder?(): Promise<WorkItemDetails[]>;
-  getWorkItem(id: string): Promise<WorkItemDetails>;
-  listComments(
-    id: string,
-    opts: { limit?: number; newestFirst: boolean; includeInternal: boolean },
-  ): Promise<ShowPayload['comments']>;
-  listAttachments(id: string): Promise<WorkItemAttachment[]>;
-  listLinkedWorkItems(id: string): Promise<WorkItemLink[]>;
-  setStage(id: string, stage: StageKey): Promise<void>;
-};
 
 function minimalTicketPayload(
   adapter: WorkflowLoopSelectionAdapter,
