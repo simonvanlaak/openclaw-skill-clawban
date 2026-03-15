@@ -70,4 +70,21 @@ describe('worker_result schema', () => {
     expect(comment).toContain('1. Investigated API behavior and isolated ambiguous requirement behavior.');
     expect(comment).toContain('1. Should we persist validation failures to ticket comments or logs only?');
   });
+
+  it('places solution summary immediately after worker decision for completed comments', () => {
+    const payload = JSON.stringify({
+      decision: 'completed',
+      completed_steps: ['Implemented the requested workflow fix and verified the changed behavior.'],
+      clarification_questions: [],
+      blocker_resolve_requests: [],
+      solution_summary: 'The ticket is complete and the final state has been reconciled correctly.',
+      evidence: ['Ran the targeted tests and the full suite successfully.'],
+    });
+    const parsed = validateWorkerResult(payload);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const comment = formatWorkerResultComment(parsed.value);
+    expect(comment).toContain('Worker decision: completed\n\nSolution summary:');
+    expect(comment.indexOf('Solution summary:')).toBeLessThan(comment.indexOf('Completed steps:'));
+  });
 });

@@ -213,19 +213,20 @@ function numberedList(items: string[]): string {
 }
 
 export function formatWorkerResultComment(result: WorkerResult): string {
-  const sections: string[] = [
-    `Worker decision: ${result.decision}`,
-    '',
-    'Completed steps:',
-    numberedList(result.completed_steps),
-  ];
+  const sections: string[] = [`Worker decision: ${result.decision}`];
+
+  if (result.decision === 'completed') {
+    sections.push('', 'Solution summary:', result.solution_summary ?? '');
+  }
+
+  sections.push('', 'Completed steps:', numberedList(result.completed_steps));
 
   if (result.links && result.links.length > 0) {
     sections.push('', 'Links:', formatLinks(result.links));
   }
 
   if (result.decision === 'completed') {
-    sections.push('', 'Solution summary:', result.solution_summary ?? '', '', 'Evidence:', numberedList(result.evidence));
+    sections.push('', 'Evidence:', numberedList(result.evidence));
   }
   if (result.decision === 'blocked') {
     sections.push('', 'Blocker resolve requests:', numberedList(result.blocker_resolve_requests));
