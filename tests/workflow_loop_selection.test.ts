@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('../src/automation/auto_reopen.js', () => ({
+const { runAutoReopenOnHumanComment } = vi.hoisted(() => ({
   runAutoReopenOnHumanComment: vi.fn(async () => ({ actions: [] })),
+}));
+
+vi.mock('../src/automation/auto_reopen.js', () => ({
+  runAutoReopenOnHumanComment,
 }));
 
 const { loadWorkerDelegationState } = vi.hoisted(() => ({
@@ -19,6 +23,46 @@ vi.mock('../src/workflow/worker_runtime.js', async () => {
 import { runWorkflowLoopSelection } from '../src/workflow/workflow_loop_selection.js';
 
 describe('workflow_loop_selection', () => {
+  it('skips auto-reopen scan on the hot selection path unless explicitly enabled', async () => {
+    const adapter = {
+      whoami: vi.fn(async () => ({ id: 'me-1', username: 'kwf-bot' })),
+      listOwnInProgressItems: vi.fn(async () => []),
+      listOwnBacklogItemsInOrder: vi.fn(async () => []),
+      listIdsByStage: vi.fn(async () => []),
+      listBacklogIdsInOrder: vi.fn(async () => []),
+      getWorkItem: vi.fn(async () => ({
+        id: 'noop',
+        title: 'noop',
+        stage: 'stage:todo' as const,
+        assignees: [{ id: 'me-1' }],
+        labels: [],
+      })),
+      setStage: vi.fn(async () => undefined),
+      listComments: vi.fn(async () => []),
+      listAttachments: vi.fn(async () => []),
+      listLinkedWorkItems: vi.fn(async () => []),
+      name: vi.fn(() => 'plane'),
+    };
+
+    await runWorkflowLoopSelection({
+      adapter,
+      map: { version: 1, sessionsByTicket: {} },
+      dryRun: false,
+      runAutoReopenScan: false,
+    });
+
+    expect(runAutoReopenOnHumanComment).not.toHaveBeenCalled();
+
+    await runWorkflowLoopSelection({
+      adapter,
+      map: { version: 1, sessionsByTicket: {} },
+      dryRun: false,
+      runAutoReopenScan: true,
+    });
+
+    expect(runAutoReopenOnHumanComment).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the newest self-assigned in-progress ticket and requeues extra in-progress tickets', async () => {
     const adapter = {
       whoami: vi.fn(async () => ({ id: 'me-1', username: 'kwf-bot' })),

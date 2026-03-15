@@ -108,15 +108,18 @@ export async function runWorkflowLoopSelection(params: {
   requeueTargetStage?: StageKey;
   workerRuntimeOptions?: WorkerRuntimeOptions;
   persistMap?(map: SessionMap): Promise<void>;
+  runAutoReopenScan?: boolean;
 }): Promise<WorkflowLoopSelectionOutput> {
   const requeueTargetStage = params.requeueTargetStage ?? 'stage:todo';
-  const autoReopen = await runAutoReopenOnHumanComment({
-    adapter: params.adapter,
-    map: params.map,
-    dryRun: params.dryRun,
-    requeueTargetStage,
-    persistMap: params.persistMap,
-  });
+  const autoReopen = params.runAutoReopenScan
+    ? await runAutoReopenOnHumanComment({
+        adapter: params.adapter,
+        map: params.map,
+        dryRun: params.dryRun,
+        requeueTargetStage,
+        persistMap: params.persistMap,
+      })
+    : undefined;
   const me = await params.adapter.whoami();
   const ownInProgress: Array<{ id: string; updatedAt?: Date }> = params.adapter.listOwnInProgressItems
     ? await params.adapter.listOwnInProgressItems()

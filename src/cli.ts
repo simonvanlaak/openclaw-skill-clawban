@@ -15,6 +15,7 @@ import { type WorkerRuntimeOptions } from './workflow/worker_runtime.js';
 import { runDelegationReconciler } from './workflow/delegation_reconciler.js';
 import { runHumanCommentReconciler } from './workflow/human_comment_reconciler.js';
 import { runDoneTodoRepair } from './workflow/done_todo_repair.js';
+import { runAutoReopenOnHumanComment } from './automation/auto_reopen.js';
 import { runWorkflowLoopController } from './workflow/workflow_loop_controller.js';
 import { runWorkflowLoopSelection } from './workflow/workflow_loop_selection.js';
 import { StageKeySchema } from './stage.js';
@@ -33,6 +34,7 @@ function whatNextTipForCommand(cmd: string): string {
       return 'wait for the next scheduler tick';
     case 'reconcile-delegation':
     case 'reconcile-human-comment':
+    case 'auto-reopen-scan':
     case 'repair-done-todo':
       return 'wait for the next scheduler tick';
     case 'show':
@@ -75,6 +77,7 @@ function writeHelp(io: CliIo): void {
       '  kanban-workflow create --project-id <uuid> --title "..." [--body "..."]',
       '  kanban-workflow reconcile-delegation --ticket-id <ticket-id> --session-id <session-id>',
       '  kanban-workflow reconcile-human-comment --ticket-id <ticket-id> [--comment-id <comment-id>]',
+      '  kanban-workflow auto-reopen-scan [--dry-run]',
       '  kanban-workflow repair-done-todo [--dry-run]',
       '',
     ].join('\n'),
@@ -411,6 +414,7 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
         requeueTargetStage,
         workerRuntimeOptions: WORKER_RUNTIME_OPTIONS,
         persistMap: async (nextMap) => saveSessionMap(nextMap),
+        runAutoReopenScan: false,
       });
       const result = await runWorkflowLoopController({
         adapter,
@@ -470,6 +474,22 @@ export async function runCli(rawArgv: string[], io: CliIo = { stdout: process.st
         io.stdout.write(`${JSON.stringify(result.payload, null, 2)}\n`);
       }
       return result.exitCode;
+    }
+
+    if (cmd === 'auto-reopen-scan') {
+      const dryRun = Boolean(flags['dry-run']);
+      const map = await loadSessionMap();
+      const actions = await runAutoReopenOnHumanComment({
+        adapter,
+        map,
+        dryRun,
+        requeueTargetStage,
+        persistMap: async (nextMap) => saveSessionMap(nextMap),
+      });
+
+      io.stdout.write(`${JSON.stringify({ autoReopenScan: { dryRun, actions: actions.actions, mapPath: '.tmp/kwf-session-map.json' } }, null, 2)}\n`);
+      writeWhatNext(io, cmd);
+      return 0;
     }
 
     if (cmd === 'repair-done-todo') {
