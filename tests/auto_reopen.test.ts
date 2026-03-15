@@ -100,7 +100,7 @@ describe('auto-reopen on human comment', () => {
     await fs.rm(path, { force: true });
   });
 
-  test('reopens when worker relays a human comment in body metadata', async () => {
+  test('reopens when worker relays a human comment in imported body metadata', async () => {
     const path = cursorPath('kwf-auto-reopen-relayed-human');
     const adapter = {
       whoami: vi.fn(async () => ({ id: 'bot-1', username: 'kwf-bot', name: 'Jules Mercer' })),
@@ -108,7 +108,7 @@ describe('auto-reopen on human comment', () => {
       listComments: vi.fn(async () => [
         {
           id: 'c-relay-1',
-          body: '[planka-comment:123]\nAuthor: Simon van Laak\nCreated: 2026-02-28T14:01:00Z\n\nPlease revise this.',
+          body: '[imported-comment:123]\nAuthor: Simon van Laak\nCreated: 2026-02-28T14:01:00Z\n\nPlease revise this.',
           author: { id: 'bot-1', username: 'kwf-bot', name: 'Jules Mercer' },
           createdAt: new Date('2026-02-28T14:03:00Z'),
         },

@@ -9,7 +9,7 @@ It does **not**:
 - implement OAuth flows
 - directly authenticate to remote services via HTTP
 
-Instead, it executes platform CLIs (e.g. `gh`, `plane`, `linear`, `planka-cli`) and relies on whatever authentication/session those tools already have on the machine.
+Instead, it executes platform CLIs (e.g. `gh`, `plane`, `linear`) and relies on whatever authentication/session those tools already have on the machine.
 
 ## Threat model / implications
 

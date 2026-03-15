@@ -55,8 +55,8 @@ function normalizeActorKeys(actor?: { id?: string; username?: string; name?: str
 
 function parseRelayedAuthorNameFromBody(body?: string): string | undefined {
   if (!body) return undefined;
-  // Bridge/import shape seen in production (Planka -> Plane):
-  // [planka-comment:<id>]\nAuthor: Simon van Laak\nCreated ...
+  // Imported/relayed comment shape seen in production:
+  // [imported-comment:<id>]\nAuthor: Simon van Laak\nCreated ...
   const match = body.match(/(?:^|\n|\\n)\s*Author\s*:\s*([^\n\r\\]+)/i);
   const name = match?.[1]?.trim();
   return name ? name : undefined;
