@@ -72,6 +72,8 @@ describe('session workflow-loop', () => {
     expect(second.actions[0]?.text).toContain('VERIFICATION_HARNESS (mandatory before completed/in-review):');
     expect(second.actions[0]?.text).toContain('decision="blocked" with the exact missing dependency');
     expect(second.actions[0]?.text).toContain('verification_primitives.sh {http-status|file-exists|file-contains|diff-changed|metric-threshold}');
+    expect(second.actions[0]?.text).toContain('run scripts/kwf_ticket_probe.ts first instead of improvising raw Plane CLI queries');
+    expect(second.actions[0]?.text).toContain('Do not start with broad raw `plane issues list` exploration unless the ticket probe is insufficient.');
 
     const third = buildWorkflowLoopPlan({
       previousMap: second.map,
@@ -166,6 +168,7 @@ describe('session workflow-loop', () => {
 
     expect(plan.actions[0]?.text).toContain('npx tsx scripts/kwf_ticket_probe.ts --ticket-id A1');
     expect(plan.actions[0]?.text).toContain('Use the probe JSON as your starting evidence bundle before doing deeper manual checks.');
+    expect(plan.actions[0]?.text).toContain('Only fall back to raw Plane CLI exploration if the probe output is insufficient for the task.');
   });
 
   it('uses linked issue key for worker session id + label when available', () => {
