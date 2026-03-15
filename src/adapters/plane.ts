@@ -1323,7 +1323,7 @@ export class PlaneAdapter implements Adapter {
 
     for (const projectId of this.projectIds) {
       const stateId = await this.resolveStateIdForStage(projectId, stage).catch(() => undefined);
-      const issues = await this.getSnapshotIssuesForProject(projectId, {
+      const issues = await this.listIssuesForSelection(projectId, {
         assigneeId: meId || undefined,
         stateId,
       });
@@ -1377,10 +1377,10 @@ export class PlaneAdapter implements Adapter {
 
     for (const projectId of this.projectIds) {
       const doneStateId = await this.findStateIdByName(projectId, 'Done').catch(() => undefined);
-      const issues = normalizePlaneIssuesList(await this.listIssuesRaw(projectId, {
+      const issues = await this.listIssuesForSelection(projectId, {
         assigneeId: meId || undefined,
         stateId: doneStateId,
-      }));
+      });
       let items = doneStateId
         ? issues
         : issues.filter((issue) => {
@@ -1418,6 +1418,43 @@ export class PlaneAdapter implements Adapter {
     return out.trim().length > 0 ? JSON.parse(out) : [];
   }
 
+  private async listIssuesViaApi(projectId: string): Promise<any[]> {
+    const apiKey = process.env.PLANE_API_KEY;
+    if (!apiKey) {
+      throw new Error('PLANE_API_KEY is required for Plane issues API');
+    }
+
+    const base = (process.env.PLANE_BASE_URL || 'https://api.plane.so').replace(/\/$/, '');
+    const url = `${base}/api/v1/workspaces/${this.workspaceSlug}/projects/${projectId}/issues/`;
+
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'x-api-key': apiKey,
+      },
+    });
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      throw new Error(`Plane issues API failed: HTTP ${res.status} ${txt}`);
+    }
+
+    const json = await res.json().catch(() => ([]));
+    return normalizePlaneIssuesList(json);
+  }
+
+  private async listIssuesForSelection(projectId: string, opts?: { assigneeId?: string; stateId?: string }): Promise<any[]> {
+    try {
+      const viaApi = await this.listIssuesViaApi(projectId);
+      const filtered = await this.filterIssuesClientSide(projectId, viaApi, opts);
+      return await this.hydrateIssueStateNames(projectId, filtered);
+    } catch {
+      const viaCli = normalizePlaneIssuesList(await this.listIssuesRaw(projectId, opts));
+      const filtered = await this.filterIssuesClientSide(projectId, viaCli, opts);
+      return await this.hydrateIssueStateNames(projectId, filtered);
+    }
+  }
+
   private async filterIssuesClientSide(
     projectId: string,
     issues: any[],
@@ -1449,6 +1486,29 @@ export class PlaneAdapter implements Adapter {
       }
 
       return true;
+    });
+  }
+
+  private async hydrateIssueStateNames(projectId: string, issues: any[]): Promise<any[]> {
+    const states = await this.fetchStatesForProject(projectId).catch(() => []);
+    if (states.length === 0) return issues;
+
+    const stateNameById = new Map(states.map((state) => [state.id, state.name] as const));
+    return issues.map((issue) => {
+      const stateName = extractIssueStageName(issue);
+      if (stateName) return issue;
+
+      const stateId = extractIssueStateId(issue);
+      if (!stateId) return issue;
+
+      const mappedName = stateNameById.get(stateId);
+      if (!mappedName || !issue || typeof issue !== 'object') return issue;
+
+      return {
+        ...(issue as Record<string, unknown>),
+        state: { id: stateId, name: mappedName },
+        state_detail: { name: mappedName },
+      };
     });
   }
 
@@ -1506,7 +1566,7 @@ export class PlaneAdapter implements Adapter {
 
     for (const projectId of this.projectIds) {
       const backlogStateId = await this.resolveStateIdForStage(projectId, 'stage:todo').catch(() => undefined);
-      const issues = await this.getSnapshotIssuesForProject(projectId, {
+      const issues = await this.listIssuesForSelection(projectId, {
         assigneeId: meId || undefined,
         stateId: backlogStateId,
       });
@@ -1900,8 +1960,10 @@ export class PlaneAdapter implements Adapter {
       if (!title) continue;
 
       const stateName =
-        (typeof issue.state === 'string' ? issue.state : issue.state?.name) ??
-        (typeof issue.state_detail === 'string' ? issue.state_detail : issue.state_detail?.name);
+        issue.state?.name ??
+        issue.state_detail?.name ??
+        (typeof issue.state === 'string' ? issue.state : undefined) ??
+        (typeof issue.state_detail === 'string' ? issue.state_detail : undefined);
       if (!stateName) continue;
 
       const mapped = this.stageMap[stateName];

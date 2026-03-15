@@ -18,6 +18,9 @@ type ExecaMock = typeof execa & {
 describe('PlaneAdapter', () => {
   beforeEach(() => {
     (execa as any as ExecaMock).mockReset();
+    vi.unstubAllGlobals();
+    delete process.env.PLANE_API_KEY;
+    delete process.env.PLANE_BASE_URL;
   });
 
   // plane CLI supports -f json; keep this test around as a safety net
@@ -239,6 +242,79 @@ describe('PlaneAdapter', () => {
     expect(ids).toEqual(['todo-mine']);
     const calls = (execa as any).mock.calls.map((c: any) => c[1]);
     expect(calls).toContainEqual([
+      'issues',
+      'list',
+      '-p',
+      projectId,
+      '--state',
+      'state-todo-1',
+      '--assignee',
+      'me-1',
+      '-f',
+      'json',
+    ]);
+  });
+
+  it('uses the Plane API directly for backlog selection when API credentials are available', async () => {
+    process.env.PLANE_API_KEY = 'test-key';
+    process.env.PLANE_BASE_URL = 'https://plane.example';
+
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        results: [
+          {
+            id: 'todo-mine',
+            name: 'Mine',
+            priority: 'high',
+            state: 'state-todo-1',
+            assignees: [{ id: 'me-1' }],
+          },
+          {
+            id: 'todo-other',
+            name: 'Other',
+            priority: 'urgent',
+            state: 'state-todo-1',
+            assignees: [{ id: 'someone-else' }],
+          },
+        ],
+      }),
+      text: async () => '',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const projectId = `proj-api-backlog-${Date.now()}`;
+    (execa as any as ExecaMock)
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ id: 'me-1', email: 'me@example.com', display_name: 'Me' }),
+      })
+      .mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          results: [{ id: 'state-todo-1', name: 'Todo' }],
+        }),
+      });
+
+    const adapter = new PlaneAdapter({
+      workspaceSlug: 'ws',
+      projectId,
+      stageMap: {
+        Todo: 'stage:todo',
+      },
+    });
+
+    const ids = await adapter.listBacklogIdsInOrder();
+
+    expect(ids).toEqual(['todo-mine']);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `https://plane.example/api/v1/workspaces/ws/projects/${projectId}/issues/`,
+      expect.objectContaining({
+        method: 'GET',
+        headers: { 'x-api-key': 'test-key' },
+      }),
+    );
+    const calls = (execa as any).mock.calls.map((c: any) => c[1]);
+    expect(calls).not.toContainEqual([
       'issues',
       'list',
       '-p',
