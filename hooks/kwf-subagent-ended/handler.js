@@ -27,7 +27,7 @@ async function logLine(message, extra = undefined) {
 }
 
 function isWorkerChildSessionKey(value) {
-  return typeof value === "string" && value.startsWith("agent:main:subagent:");
+  return typeof value === "string" && /^agent:[^:]+:subagent:/.test(value.trim());
 }
 
 function resolveChildSessionKey(event) {
@@ -63,6 +63,12 @@ async function runNpm(repoDir, args, meta) {
 export default async function kwfSubagentEnded(event) {
   const childSessionKey = resolveChildSessionKey(event);
   if (!isWorkerChildSessionKey(childSessionKey)) {
+    await logLine("ignored-event", {
+      targetSessionKey: typeof event?.targetSessionKey === "string" ? event.targetSessionKey : undefined,
+      childSessionKey: typeof event?.childSessionKey === "string" ? event.childSessionKey : undefined,
+      nestedTargetSessionKey: typeof event?.target?.sessionKey === "string" ? event.target.sessionKey : undefined,
+      reason: "not-subagent-session",
+    });
     return;
   }
 

@@ -27,7 +27,7 @@ describe('kwf-subagent-ended hook', () => {
     execFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => cb(null, '', ''));
   });
 
-  it('runs reconcile-subagent-ended and reconcile-active-runs for main worker subagents', async () => {
+  it('runs reconcile-subagent-ended and reconcile-active-runs for any subagent session', async () => {
     await kwfSubagentEnded({
       targetSessionKey: 'agent:main:subagent:child-265',
       runId: 'run-265',
@@ -53,9 +53,26 @@ describe('kwf-subagent-ended hook', () => {
     ]);
   });
 
+  it('also accepts legacy kanban-workflow-worker subagent keys', async () => {
+    await kwfSubagentEnded({
+      targetSessionKey: 'agent:kanban-workflow-worker:subagent:child-legacy',
+    });
+
+    expect(execFile).toHaveBeenCalledTimes(2);
+    expect(execFile.mock.calls[0]?.[1]).toEqual([
+      'run',
+      '-s',
+      'kanban-workflow',
+      '--',
+      'reconcile-subagent-ended',
+      '--child-session-key',
+      'agent:kanban-workflow-worker:subagent:child-legacy',
+    ]);
+  });
+
   it('ignores non-worker session keys', async () => {
     await kwfSubagentEnded({
-      targetSessionKey: 'agent:other:subagent:child-265',
+      targetSessionKey: 'agent:main:main',
     });
 
     expect(execFile).not.toHaveBeenCalled();
