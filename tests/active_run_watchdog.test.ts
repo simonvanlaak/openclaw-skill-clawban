@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   loadSessionMap,
+  saveSessionMap,
 } = vi.hoisted(() => ({
   loadSessionMap: vi.fn(),
+  saveSessionMap: vi.fn(),
 }));
 
 const {
@@ -23,6 +25,7 @@ vi.mock('../src/automation/session_dispatcher.js', async () => {
   return {
     ...actual,
     loadSessionMap,
+    saveSessionMap,
   };
 });
 
@@ -166,6 +169,7 @@ describe('active_run_watchdog', () => {
       now: new Date('2026-03-15T21:30:00.000Z'),
       requestedStaleAfterSeconds: 60,
       runningStaleGraceSeconds: 60,
+      remediateStaleRunning: false,
     });
 
     expect(result.staleRequested).toEqual([
@@ -173,6 +177,79 @@ describe('active_run_watchdog', () => {
     ]);
     expect(result.staleRunning).toEqual([
       expect.objectContaining({ ticketId: 'A2', sessionId: 'jules-302', runId: 'run-302' }),
+    ]);
+  });
+
+  it('remediates stale started runs by requeueing in-progress tickets and clearing local active state', async () => {
+    loadSessionMap.mockResolvedValue({
+      version: 1 as const,
+      active: {
+        ticketId: 'A2',
+        sessionId: 'jules-302',
+      },
+      sessionsByTicket: {
+        A2: {
+          sessionId: 'jules-302',
+          lastState: 'in_progress' as const,
+          lastSeenAt: '2026-03-15T19:00:00.000Z',
+          workStartedAt: '2026-03-15T19:00:00.000Z',
+          activeRun: {
+            requestId: 'req-302',
+            runId: 'run-302',
+            status: 'started' as const,
+            sentAt: '2026-03-15T19:00:00.000Z',
+            waitTimeoutSeconds: 3600,
+            sessionKey: 'agent:main:subagent:child-302',
+          },
+        },
+      },
+    });
+    loadTrackedWorkerRunState.mockResolvedValue({
+      kind: 'running',
+      meta: {
+        ticketId: 'A2',
+        dispatchRunId: 'spawn',
+        sessionId: 'jules-302',
+        agentId: 'main',
+        thinking: 'high',
+        startedAt: '2026-03-15T19:00:00.000Z',
+        runId: 'run-302',
+        sessionKey: 'agent:main:subagent:child-302',
+        runTimeoutSeconds: 3600,
+      },
+    });
+
+    const adapter = {
+      getWorkItem: vi.fn(async () => ({ stage: 'stage:in-progress' })),
+      setStage: vi.fn(async () => undefined),
+    };
+
+    const result = await runActiveRunWatchdog({
+      adapter: adapter as any,
+      dispatchRunId: 'dispatch-watchdog',
+      workerAgentId: 'main',
+      workerRuntimeOptions: {
+        delegationDir: '.tmp/test-delegations',
+        defaultSyncTimeoutMs: 30_000,
+        defaultBackgroundTimeoutMs: 60_000,
+        requesterSessionKey: 'agent:kanban-workflow-workflow-loop:kwf-control',
+        isBackgroundDelegationAllowed: () => false,
+      },
+      now: new Date('2026-03-15T20:03:00.000Z'),
+      runningStaleGraceSeconds: 60,
+    });
+
+    expect(adapter.setStage).toHaveBeenCalledWith('A2', 'stage:todo');
+    expect(saveSessionMap).toHaveBeenCalledOnce();
+    expect(result.staleRunning).toEqual([
+      expect.objectContaining({
+        ticketId: 'A2',
+        sessionId: 'jules-302',
+        runId: 'run-302',
+        remediated: true,
+        stageBefore: 'stage:in-progress',
+        stageAfter: 'stage:todo',
+      }),
     ]);
   });
 });

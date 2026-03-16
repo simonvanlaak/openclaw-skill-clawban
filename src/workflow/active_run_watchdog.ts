@@ -1,5 +1,6 @@
 import {
   loadSessionMap,
+  saveSessionMap,
   type SessionMap,
 } from '../automation/session_dispatcher.js';
 import type { StageKey } from '../stage.js';
@@ -27,8 +28,30 @@ export type ActiveRunWatchdogResult = {
     runId?: string;
     childSessionKey?: string;
     ageSeconds: number;
+    remediated?: boolean;
+    stageBefore?: StageKey;
+    stageAfter?: StageKey;
   }>;
 };
+
+function clearStaleActiveRun(map: SessionMap, ticketId: string, nowIso: string, stageAfter?: StageKey): void {
+  const entry = map.sessionsByTicket?.[ticketId];
+  if (!entry) return;
+  delete entry.activeRun;
+  entry.lastSeenAt = nowIso;
+
+  if (stageAfter === 'stage:blocked') {
+    entry.lastState = 'blocked';
+  } else if (stageAfter === 'stage:in-review') {
+    entry.lastState = 'completed';
+  } else {
+    entry.lastState = 'queued';
+  }
+
+  if (map.active?.ticketId === ticketId) {
+    delete map.active;
+  }
+}
 
 function ageSecondsFrom(iso: string | undefined, now: number): number | null {
   const ms = Date.parse(String(iso ?? ''));
@@ -46,12 +69,14 @@ export async function runActiveRunWatchdog(params: {
   now?: Date;
   requestedStaleAfterSeconds?: number;
   runningStaleGraceSeconds?: number;
+  remediateStaleRunning?: boolean;
 }): Promise<ActiveRunWatchdogResult> {
   const map = await loadSessionMap(params.mapPath);
   const now = params.now ?? new Date();
   const nowMs = now.getTime();
   const requestedStaleAfterSeconds = params.requestedStaleAfterSeconds ?? 120;
-  const runningStaleGraceSeconds = params.runningStaleGraceSeconds ?? 600;
+  const runningStaleGraceSeconds = params.runningStaleGraceSeconds ?? 120;
+  const remediateStaleRunning = params.remediateStaleRunning ?? true;
 
   const result: ActiveRunWatchdogResult = {
     scanned: 0,
@@ -100,15 +125,43 @@ export async function runActiveRunWatchdog(params: {
     }
 
     if (state.kind === 'running') {
+      const activeRun = entry.activeRun;
+      if (!activeRun || activeRun.status !== 'started') continue;
       const ageSeconds = ageSecondsFrom(entry.activeRun.sentAt, nowMs);
-      const staleAfterSeconds = Math.max(0, entry.activeRun.waitTimeoutSeconds + runningStaleGraceSeconds);
+      const staleAfterSeconds = Math.max(0, activeRun.waitTimeoutSeconds + runningStaleGraceSeconds);
       if (ageSeconds != null && ageSeconds >= staleAfterSeconds) {
+        let stageBefore: StageKey | undefined;
+        let stageAfter: StageKey | undefined;
+        let remediated = false;
+
+        if (remediateStaleRunning) {
+          const item = typeof params.adapter.getWorkItem === 'function'
+            ? await params.adapter.getWorkItem(ticketId).catch(() => undefined)
+            : undefined;
+          stageBefore = item?.stage as StageKey | undefined;
+          const targetStage = params.requeueTargetStage ?? 'stage:todo';
+
+          if (!stageBefore || stageBefore === 'stage:in-progress') {
+            await params.adapter.setStage(ticketId, targetStage);
+            stageAfter = targetStage;
+          } else {
+            stageAfter = stageBefore;
+          }
+
+          clearStaleActiveRun(map, ticketId, now.toISOString(), stageAfter);
+          await saveSessionMap(map, params.mapPath);
+          remediated = true;
+        }
+
         result.staleRunning.push({
           ticketId,
           sessionId: entry.sessionId,
-          runId: entry.activeRun.runId,
-          childSessionKey: entry.activeRun.sessionKey,
+          runId: activeRun.runId,
+          childSessionKey: activeRun.sessionKey,
           ageSeconds,
+          remediated,
+          stageBefore,
+          stageAfter,
         });
       }
     }
