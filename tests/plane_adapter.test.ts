@@ -960,6 +960,81 @@ describe('PlaneAdapter', () => {
     }
   });
 
+  it('embeds a hidden operation marker in comment_html when provided', async () => {
+    const oldKey = process.env.PLANE_API_KEY;
+    const oldBase = process.env.PLANE_BASE_URL;
+    process.env.PLANE_API_KEY = 'test-key';
+    process.env.PLANE_BASE_URL = 'https://plane.example';
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => '',
+    });
+    vi.stubGlobal('fetch', fetchMock as any);
+
+    try {
+      const adapter = new PlaneAdapter({
+        workspaceSlug: 'ws',
+        projectId: 'proj',
+        stageMap: {
+          Doing: 'stage:in-progress',
+        },
+      });
+
+      await adapter.addComment('i9', 'hello', { operationId: 'op-123' });
+
+      const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? '{}'));
+      expect(String(body.comment_html)).toContain('<!--kwf-op:op-123-->');
+    } finally {
+      vi.unstubAllGlobals();
+      if (oldKey == null) delete process.env.PLANE_API_KEY;
+      else process.env.PLANE_API_KEY = oldKey;
+      if (oldBase == null) delete process.env.PLANE_BASE_URL;
+      else process.env.PLANE_BASE_URL = oldBase;
+    }
+  });
+
+  it('detects existing comment operations via raw Plane comments API markup', async () => {
+    const oldKey = process.env.PLANE_API_KEY;
+    const oldBase = process.env.PLANE_BASE_URL;
+    process.env.PLANE_API_KEY = 'test-key';
+    process.env.PLANE_BASE_URL = 'https://plane.example';
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        results: [
+          {
+            id: 'c1',
+            comment_html: '<p>hello</p><!--kwf-op:op-123-->',
+          },
+        ],
+      }),
+      text: async () => '',
+    });
+    vi.stubGlobal('fetch', fetchMock as any);
+
+    try {
+      const adapter = new PlaneAdapter({
+        workspaceSlug: 'ws',
+        projectId: 'proj',
+        stageMap: {
+          Doing: 'stage:in-progress',
+        },
+      });
+
+      await expect(adapter.hasCommentOperation('i9', 'op-123')).resolves.toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+      if (oldKey == null) delete process.env.PLANE_API_KEY;
+      else process.env.PLANE_API_KEY = oldKey;
+      if (oldBase == null) delete process.env.PLANE_BASE_URL;
+      else process.env.PLANE_BASE_URL = oldBase;
+    }
+  });
+
   it('implements addLinks via Plane links API', async () => {
     const oldKey = process.env.PLANE_API_KEY;
     const oldBase = process.env.PLANE_BASE_URL;

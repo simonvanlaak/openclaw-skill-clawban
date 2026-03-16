@@ -83,7 +83,8 @@ export type WorkItemReadPort = {
 
 export type WorkItemWritePort = {
   setStage(id: string, stage: StageKey): Promise<void>;
-  addComment(id: string, body: string): Promise<void>;
+  addComment(id: string, body: string, opts?: { operationId?: string }): Promise<void>;
+  hasCommentOperation?(id: string, operationId: string): Promise<boolean>;
   /** Add URL links to the work item (e.g. internal Nextcloud deliverables). */
   addLinks(id: string, links: ExternalLinkInput[]): Promise<void>;
   updateComment(id: string, commentId: string, body: string): Promise<void>;

@@ -653,7 +653,23 @@ export class PlaneAdapter implements Adapter {
     return undefined;
   }
 
-  private async postCommentViaApi(projectId: string, id: string, body: string): Promise<void> {
+  private renderCommentOperationMarker(operationId?: string): string {
+    const op = String(operationId ?? '').trim();
+    if (!op) return '';
+    return `<!--kwf-op:${this.escapeHtml(op)}-->`;
+  }
+
+  private rawCommentHasOperation(row: any, operationId: string): boolean {
+    const op = String(operationId ?? '').trim();
+    if (!op) return false;
+    const marker = `kwf-op:${op}`;
+    const html = String(row?.comment_html ?? row?.commentHtml ?? '').trim();
+    if (html.includes(marker)) return true;
+    const serializedJson = JSON.stringify(row?.comment_json ?? row?.commentJson ?? '');
+    return serializedJson.includes(marker);
+  }
+
+  private async postCommentViaApi(projectId: string, id: string, body: string, operationId?: string): Promise<void> {
     const apiKey = process.env.PLANE_API_KEY;
     if (!apiKey) {
       throw new Error('PLANE_API_KEY is required for Plane comment API');
@@ -663,7 +679,7 @@ export class PlaneAdapter implements Adapter {
     const workItemUrl = `${base}/api/v1/workspaces/${this.workspaceSlug}/projects/${projectId}/work-items/${String(id)}/comments/`;
     const issueUrl = `${base}/api/v1/workspaces/${this.workspaceSlug}/projects/${projectId}/issues/${String(id)}/comments/`;
 
-    const commentHtml = await this.renderCommentHtmlWithMentions(body);
+    const commentHtml = `${await this.renderCommentHtmlWithMentions(body)}${this.renderCommentOperationMarker(operationId)}`;
     const commentJson = await this.renderCommentJsonWithMentions(body);
 
     let res = await fetch(workItemUrl, {
@@ -2078,13 +2094,21 @@ export class PlaneAdapter implements Adapter {
     ]);
   }
 
-  async addComment(id: string, body: string): Promise<void> {
+  async addComment(id: string, body: string, opts?: { operationId?: string }): Promise<void> {
     const projectId = await this.resolveProjectIdForIssue(id, 'addComment');
     const msg = String(body || '').trim();
     if (!msg) return;
 
     // Primary path: direct Plane API comments endpoint (avoids CLI 405 behavior).
-    await this.postCommentViaApi(projectId, String(id), msg);
+    await this.postCommentViaApi(projectId, String(id), msg, opts?.operationId);
+  }
+
+  async hasCommentOperation(id: string, operationId: string): Promise<boolean> {
+    const op = String(operationId ?? '').trim();
+    if (!op) return false;
+    const projectId = await this.resolveProjectIdForIssue(id, 'hasCommentOperation');
+    const raw = await this.listCommentsViaApi(projectId, id, { limit: 25 });
+    return raw.some((comment) => this.rawCommentHasOperation(comment, op));
   }
 
   async addLinks(id: string, links: ExternalLinkInput[]): Promise<void> {

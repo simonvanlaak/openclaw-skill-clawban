@@ -147,7 +147,17 @@ async function hasExistingCommentMatch(params: {
   adapter: WorkflowLifecycleAdapter;
   ticketId: string;
   commentBody: string;
+  operationId?: string;
 }): Promise<boolean> {
+  const operationId = String(params.operationId ?? '').trim();
+  if (operationId && typeof params.adapter.hasCommentOperation === 'function') {
+    try {
+      const matched = await params.adapter.hasCommentOperation(params.ticketId, operationId);
+      if (matched) return true;
+    } catch {
+      // Fall back to body matching if the adapter-side operation probe fails.
+    }
+  }
   if (typeof params.adapter.listComments !== 'function') return false;
   try {
     const comments = await params.adapter.listComments(params.ticketId, {
@@ -321,9 +331,12 @@ export async function applyWorkerOutputToTicket(params: {
         adapter,
         ticketId: action.ticketId,
         commentBody: currentPending.commentBody,
+        operationId: currentPending.operationId,
       });
       if (!alreadyVisible) {
-        await adapter.addComment(action.ticketId, currentPending.commentBody);
+        await adapter.addComment(action.ticketId, currentPending.commentBody, {
+          operationId: currentPending.operationId,
+        });
       }
       currentPending.commentAppliedAt = new Date().toISOString();
       await persistMapStep(persistMap, map);

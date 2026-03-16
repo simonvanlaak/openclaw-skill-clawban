@@ -134,6 +134,7 @@ describe('worker_output_applier', () => {
     const replayAdapter = {
       addComment: vi.fn(async () => undefined),
       setStage: vi.fn(async () => undefined),
+      hasCommentOperation: vi.fn(async () => true),
       listComments: vi.fn(async () => [
         {
           id: 'c-1',
