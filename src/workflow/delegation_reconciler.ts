@@ -122,7 +122,7 @@ export async function runDelegationReconciler(params: {
     action: {
       sessionId: params.sessionId,
       ticketId: params.ticketId,
-      projectId: item?.projectId ? String(item.projectId) : item?.project_id ? String(item.project_id) : undefined,
+      projectId: item?.projectId ? String(item.projectId) : undefined,
     },
     workerOutput: delegationState.workerOutput,
     dispatchRunId: params.dispatchRunId,

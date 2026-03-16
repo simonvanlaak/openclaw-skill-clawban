@@ -30,9 +30,10 @@ export type AutoReopenPort = {
     }>
   >;
   setStage(id: string, stage: StageKey): Promise<void>;
+  getWorkItem?(id: string): Promise<{ stage: StageKey }>;
 };
 
-type SingleTicketAutoReopenPort = Pick<AutoReopenPort, 'whoami' | 'listComments' | 'setStage'>;
+type SingleTicketAutoReopenPort = Pick<AutoReopenPort, 'whoami' | 'listComments' | 'setStage' | 'getWorkItem'>;
 
 export type AutoReopenAction = {
   ticketId: string;
@@ -115,6 +116,18 @@ function isHumanRelativeToWorker(
   }
 
   return relayedIsHuman;
+}
+
+async function ensureStageTransition(params: {
+  adapter: Pick<AutoReopenPort, 'setStage' | 'getWorkItem'>;
+  ticketId: string;
+  targetStage: StageKey;
+}): Promise<void> {
+  const currentStage = typeof params.adapter.getWorkItem === 'function'
+    ? await params.adapter.getWorkItem(params.ticketId).then((item) => item.stage).catch(() => undefined)
+    : undefined;
+  if (currentStage === params.targetStage) return;
+  await params.adapter.setStage(params.ticketId, params.targetStage);
 }
 
 async function loadCursor(path: string): Promise<AutoReopenCursor> {
@@ -246,17 +259,29 @@ export async function runAutoReopenForTicket(opts: {
 
         const pending = entry?.pendingMutation;
         if (pending?.kind === 'human_reopen' && !pending.stageAppliedAt) {
-          await opts.adapter.setStage(opts.ticketId, requeueTargetStage);
+          await ensureStageTransition({
+            adapter: opts.adapter,
+            ticketId: opts.ticketId,
+            targetStage: requeueTargetStage,
+          });
           pending.stageAppliedAt = new Date().toISOString();
           await opts.persistMap?.(opts.map);
         } else if (!pending || pending.kind !== 'human_reopen') {
-          await opts.adapter.setStage(opts.ticketId, requeueTargetStage);
+          await ensureStageTransition({
+            adapter: opts.adapter,
+            ticketId: opts.ticketId,
+            targetStage: requeueTargetStage,
+          });
         }
 
         markTicketQueued(opts.map, opts.ticketId, new Date());
         await opts.persistMap?.(opts.map);
       } else {
-        await opts.adapter.setStage(opts.ticketId, requeueTargetStage);
+        await ensureStageTransition({
+          adapter: opts.adapter,
+          ticketId: opts.ticketId,
+          targetStage: requeueTargetStage,
+        });
       }
     }
   }
@@ -348,17 +373,29 @@ export async function runAutoReopenOnHumanComment(opts: {
 
             const pending = entry?.pendingMutation;
             if (pending?.kind === 'human_reopen' && !pending.stageAppliedAt) {
-              await opts.adapter.setStage(id, requeueTargetStage);
+              await ensureStageTransition({
+                adapter: opts.adapter,
+                ticketId: id,
+                targetStage: requeueTargetStage,
+              });
               pending.stageAppliedAt = new Date().toISOString();
               await opts.persistMap?.(opts.map);
             } else if (!pending || pending.kind !== 'human_reopen') {
-              await opts.adapter.setStage(id, requeueTargetStage);
+              await ensureStageTransition({
+                adapter: opts.adapter,
+                ticketId: id,
+                targetStage: requeueTargetStage,
+              });
             }
 
             markTicketQueued(opts.map, id, new Date());
             await opts.persistMap?.(opts.map);
           } else {
-            await opts.adapter.setStage(id, requeueTargetStage);
+            await ensureStageTransition({
+              adapter: opts.adapter,
+              ticketId: id,
+              targetStage: requeueTargetStage,
+            });
           }
         }
       }

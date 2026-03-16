@@ -116,7 +116,7 @@ describe('delegation_reconciler', () => {
 
   it('applies a completed delegation immediately, persists the completed session state, and starts the next ticket handoff', async () => {
     const adapter = {
-      getWorkItem: vi.fn(async () => ({ id: 'A1', projectId: 'P1' })),
+      getWorkItem: vi.fn(async () => ({ id: 'A1', projectId: 'P1', title: 'Ticket', stage: 'stage:in-progress' as const, labels: [] })),
       addComment: vi.fn(async () => undefined),
       setStage: vi.fn(async () => undefined),
     };

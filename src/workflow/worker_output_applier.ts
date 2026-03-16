@@ -171,6 +171,37 @@ async function hasExistingCommentMatch(params: {
   }
 }
 
+async function isStageAlreadyApplied(params: {
+  adapter: WorkflowLifecycleAdapter;
+  ticketId: string;
+  targetStage: 'stage:in-review' | 'stage:blocked';
+}): Promise<boolean> {
+  if (typeof params.adapter.getWorkItem !== 'function') return false;
+  try {
+    const item = await params.adapter.getWorkItem(params.ticketId);
+    return item?.stage === params.targetStage;
+  } catch {
+    return false;
+  }
+}
+
+async function areLinksAlreadyApplied(params: {
+  adapter: WorkflowLifecycleAdapter;
+  ticketId: string;
+  links: ExternalLinkInput[];
+}): Promise<boolean> {
+  if (params.links.length === 0) return true;
+  if (typeof params.adapter.hasLinkUrl !== 'function') return false;
+  try {
+    const results = await Promise.all(
+      params.links.map((link) => params.adapter.hasLinkUrl!(params.ticketId, link.url)),
+    );
+    return results.every(Boolean);
+  } catch {
+    return false;
+  }
+}
+
 export async function applyWorkerOutputToTicket(params: {
   adapter: WorkflowLifecycleAdapter;
   map: SessionMap;
@@ -343,7 +374,14 @@ export async function applyWorkerOutputToTicket(params: {
     }
 
     if (!currentPending.stageAppliedAt) {
-      await adapter.setStage(action.ticketId, currentPending.targetStage);
+      const alreadyApplied = await isStageAlreadyApplied({
+        adapter,
+        ticketId: action.ticketId,
+        targetStage: currentPending.targetStage,
+      });
+      if (!alreadyApplied) {
+        await adapter.setStage(action.ticketId, currentPending.targetStage);
+      }
       currentPending.stageAppliedAt = new Date().toISOString();
       await persistMapStep(persistMap, map);
     }
@@ -354,7 +392,14 @@ export async function applyWorkerOutputToTicket(params: {
       && currentPending.links.length > 0
       && typeof adapter.addLinks === 'function'
     ) {
-      await adapter.addLinks(action.ticketId, currentPending.links);
+      const alreadyApplied = await areLinksAlreadyApplied({
+        adapter,
+        ticketId: action.ticketId,
+        links: currentPending.links,
+      });
+      if (!alreadyApplied) {
+        await adapter.addLinks(action.ticketId, currentPending.links);
+      }
       currentPending.linksAppliedAt = new Date().toISOString();
       await persistMapStep(persistMap, map);
     }

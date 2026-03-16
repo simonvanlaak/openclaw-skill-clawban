@@ -167,4 +167,57 @@ describe('worker_output_applier', () => {
     expect(map.sessionsByTicket.A1.lastState).toBe('completed');
     expect(map.sessionsByTicket.A1.pendingMutation).toBeUndefined();
   });
+
+  it('skips stage and link writes when Plane already reflects them', async () => {
+    const map: SessionMap = {
+      version: 1 as const,
+      active: { ticketId: 'A2', sessionId: 'jules-238' },
+      sessionsByTicket: {
+        A2: {
+          sessionId: 'jules-238',
+          lastState: 'in_progress' as const,
+          lastSeenAt: '2026-03-15T16:07:28.627Z',
+          workStartedAt: '2026-03-15T16:07:28.627Z',
+        },
+      },
+    };
+    const adapter = {
+      addComment: vi.fn(async () => undefined),
+      hasCommentOperation: vi.fn(async () => false),
+      setStage: vi.fn(async () => undefined),
+      getWorkItem: vi.fn(async () => ({ id: 'A2', title: 'done', stage: 'stage:in-review' as const, labels: [] })),
+      addLinks: vi.fn(async () => undefined),
+      hasLinkUrl: vi.fn(async () => true),
+      listComments: vi.fn(async () => []),
+    };
+
+    const result = await applyWorkerOutputToTicket({
+      adapter,
+      map,
+      action: { ticketId: 'A2', sessionId: 'jules-238', projectId: 'P1' },
+      workerOutput: JSON.stringify({
+        decision: 'completed',
+        completed_steps: ['Implemented the fix and uploaded the report for review.'],
+        clarification_questions: [],
+        blocker_resolve_requests: [],
+        solution_summary: 'The fix is complete and ready for review.',
+        evidence: ['Verification succeeded and the deliverable is already linked.'],
+        links: [{ title: 'Report', url: 'https://docs.example/report' }],
+      }),
+      dispatchRunId: 'dispatch-3',
+      workerAgentId: 'main',
+      workerRuntimeOptions: {
+        delegationDir: '.tmp/test-delegations',
+        defaultSyncTimeoutMs: 30_000,
+        defaultBackgroundTimeoutMs: 60_000,
+        isBackgroundDelegationAllowed: () => false,
+      },
+      persistMap: async () => undefined,
+    });
+
+    expect(result.outcome).toBe('applied');
+    expect(adapter.addComment).toHaveBeenCalledOnce();
+    expect(adapter.setStage).not.toHaveBeenCalled();
+    expect(adapter.addLinks).not.toHaveBeenCalled();
+  });
 });

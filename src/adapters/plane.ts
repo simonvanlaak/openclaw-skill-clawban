@@ -2111,6 +2111,14 @@ export class PlaneAdapter implements Adapter {
     return raw.some((comment) => this.rawCommentHasOperation(comment, op));
   }
 
+  async hasLinkUrl(id: string, url: string): Promise<boolean> {
+    const normalizedUrl = String(url ?? '').trim();
+    if (!normalizedUrl) return false;
+    const projectId = await this.resolveProjectIdForIssue(id, 'hasLinkUrl');
+    const links = await this.listLinksViaApi(projectId, String(id));
+    return links.some((link: any) => String(link?.url ?? '').trim() === normalizedUrl);
+  }
+
   async addLinks(id: string, links: ExternalLinkInput[]): Promise<void> {
     const items = Array.isArray(links) ? links : [];
     if (items.length === 0) return;

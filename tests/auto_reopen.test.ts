@@ -77,6 +77,34 @@ describe('auto-reopen on human comment', () => {
     await fs.rm(path, { force: true });
   });
 
+  test('does not reapply reopen stage when Plane already shows backlog', async () => {
+    const path = cursorPath('kwf-auto-reopen-stage-already-applied');
+    const adapter = {
+      whoami: vi.fn(async () => ({ id: 'kwf-user-1', username: 'kwf-bot' })),
+      listIdsByStage: vi.fn(async (stage: string) => (stage === 'stage:in-review' ? ['RV-3'] : [])),
+      listComments: vi.fn(async () => [
+        {
+          id: 'c-human-3',
+          body: 'Please take another pass.',
+          author: { id: 'human-3', username: 'pm-jane' },
+          createdAt: new Date('2026-02-28T14:01:00Z'),
+        },
+      ]),
+      getWorkItem: vi.fn(async () => ({ stage: 'stage:todo' as const })),
+      setStage: vi.fn(async () => undefined),
+    };
+
+    const res = await runAutoReopenOnHumanComment({ adapter, cursorPath: path });
+
+    expect(res.actions).toEqual([
+      { ticketId: 'RV-3', fromStage: 'stage:in-review', toStage: 'stage:todo', triggerCommentId: 'c-human-3' },
+    ]);
+    expect(adapter.getWorkItem).toHaveBeenCalledWith('RV-3');
+    expect(adapter.setStage).not.toHaveBeenCalled();
+
+    await fs.rm(path, { force: true });
+  });
+
   test('does not reopen when newest unseen comment is from worker account', async () => {
     const path = cursorPath('kwf-auto-reopen-self');
     const adapter = {

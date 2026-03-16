@@ -32,6 +32,8 @@ export type WorkflowLifecycleAdapter = {
   addComment(id: string, body: string, opts?: { operationId?: string }): Promise<void>;
   hasCommentOperation?(id: string, operationId: string): Promise<boolean>;
   setStage(id: string, stage: string): Promise<void>;
+  getWorkItem?(id: string): Promise<WorkItemDetails>;
+  hasLinkUrl?(id: string, url: string): Promise<boolean>;
   addLinks?(id: string, links: ExternalLinkInput[]): Promise<void>;
   getStakeholderMentions?(ticketId: string): Promise<string[]>;
   listComments?(

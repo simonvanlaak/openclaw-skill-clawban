@@ -67,7 +67,7 @@ function isAssignedToSelf(
 }
 
 async function reserveBacklogTicket(params: {
-  adapter: Pick<WorkflowLoopSelectionAdapter, 'setStage'>;
+  adapter: Pick<WorkflowLoopSelectionAdapter, 'setStage' | 'getWorkItem'>;
   map: SessionMap;
   ticketId: string;
   ticketTitle?: string;
@@ -97,7 +97,10 @@ async function reserveBacklogTicket(params: {
 
   const currentPending = params.map.sessionsByTicket[params.ticketId]?.pendingMutation;
   if (currentPending?.kind === 'ticket_reservation' && !currentPending.stageAppliedAt) {
-    await params.adapter.setStage(params.ticketId, 'stage:in-progress');
+    const currentStage = await params.adapter.getWorkItem(params.ticketId).then((item) => item.stage).catch(() => undefined);
+    if (currentStage !== 'stage:in-progress') {
+      await params.adapter.setStage(params.ticketId, 'stage:in-progress');
+    }
     currentPending.stageAppliedAt = new Date().toISOString();
     await params.persistMap?.(params.map);
   } else if (!currentPending || currentPending.kind !== 'ticket_reservation') {

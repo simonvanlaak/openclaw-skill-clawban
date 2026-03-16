@@ -128,6 +128,35 @@ describe('workflow_loop_selection', () => {
     expect(adapter.listLinkedWorkItems).not.toHaveBeenCalled();
   });
 
+  it('does not reapply backlog reservation stage when Plane already shows in-progress', async () => {
+    const adapter = {
+      whoami: vi.fn(async () => ({ id: 'me-1', username: 'kwf-bot' })),
+      listIdsByStage: vi.fn(async () => []),
+      listBacklogIdsInOrder: vi.fn(async () => ['T2']),
+      getWorkItem: vi.fn(async (id: string) => ({
+        id,
+        title: 'Mine',
+        stage: 'stage:in-progress' as const,
+        assignees: [{ id: 'me-1' }],
+        labels: [],
+      })),
+      setStage: vi.fn(async () => undefined),
+      listComments: vi.fn(async () => []),
+      listAttachments: vi.fn(async () => []),
+      listLinkedWorkItems: vi.fn(async () => []),
+      name: vi.fn(() => 'plane'),
+    };
+
+    const output = await runWorkflowLoopSelection({
+      adapter,
+      map: { version: 1, sessionsByTicket: {} },
+      dryRun: false,
+    });
+
+    expect(output.tick).toEqual({ kind: 'started', id: 'T2', reasonCode: 'start_next_assigned_backlog' });
+    expect(adapter.setStage).not.toHaveBeenCalled();
+  });
+
   it('uses adapter-provided in-progress summaries to avoid full stage-item scans', async () => {
     const adapter = {
       whoami: vi.fn(async () => ({ id: 'me-1', username: 'kwf-bot' })),
@@ -213,7 +242,8 @@ describe('workflow_loop_selection', () => {
     expect(output.tick).toEqual({ kind: 'started', id: 'T2', reasonCode: 'start_next_assigned_backlog' });
     expect(adapter.listOwnBacklogItemsInOrder).toHaveBeenCalledTimes(1);
     expect(adapter.listBacklogItemsInOrder).not.toHaveBeenCalled();
-    expect(adapter.getWorkItem).not.toHaveBeenCalled();
+    expect(adapter.getWorkItem).toHaveBeenCalledTimes(1);
+    expect(adapter.getWorkItem).toHaveBeenCalledWith('T2');
   });
 
   it('treats string assignee ids in backlog summaries as self-assigned work', async () => {
